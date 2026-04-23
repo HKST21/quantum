@@ -2,16 +2,12 @@ import pool from '../../db/pool';
 import { twilioService } from './twilioService';
 import { callHandler } from '../websockets/callHandler';
 import { AICallOutcome, ConversationOutcome } from '../types/aiCalls.types';
-import Twilio from 'twilio';
+
 
 export class CallOrchestrator {
-    private twilioClient: Twilio.Twilio;
 
     constructor() {
-        const accountSid = process.env.TWILIO_ACCOUNT_SID;
-        const authToken = process.env.TWILIO_AUTH_TOKEN;
-        if (!accountSid || !authToken) throw new Error('Twilio credentials not configured');
-        this.twilioClient = Twilio(accountSid, authToken);
+        // Carrier validation not needed - leads are pre-filtered
     }
 
     async getLeadsForCalling(limit: number = 50): Promise<any[]> {
@@ -53,24 +49,7 @@ export class CallOrchestrator {
 
             const lead = leadResult.rows[0];
 
-            console.log('📞 Calling lead:', { id: lead.id, company: lead.company_name, phone: lead.phone });
-
-            // Validate carrier
-            console.log('🔍 Validating carrier for:', lead.phone);
-            const validation = await this.validateCarrier(lead.phone);
-
-            await pool.query(
-                `UPDATE leads
-                 SET carrier = $1, line_type = $2, mobile_network_code = $3, phone_validated_at = NOW()
-                 WHERE id = $4`,
-                [validation.carrier, validation.lineType, validation.mobileNetworkCode, leadId]
-            );
-
-            if (validation.isVodafone) {
-                console.log('❌ SKIP - Vodafone customer detected');
-                await this.skipVodafoneLead(leadId, validation.carrier);
-                return;
-            }
+            console.log('📞 Calling lead:', { id: lead.id, phone: lead.phone });
 
             await pool.query(
                 `UPDATE leads
@@ -119,7 +98,7 @@ export class CallOrchestrator {
                 }
             }
 
-            console.warn('⏰ Call timeout reached');
+            console.warn('⬰ Call timeout reached');
             callHandler.forceCleanup(callSid);
             await this.updateLeadAfterCall(
                 leadId, callSid,
@@ -146,54 +125,6 @@ export class CallOrchestrator {
         }
     }
 
-    private async validateCarrier(phoneNumber: string): Promise<{
-        isVodafone: boolean;
-        carrier: string | null;
-        lineType: string | null;
-        mobileNetworkCode: string | null;
-    }> {
-        try {
-            const lookup = await this.twilioClient.lookups.v2
-                .phoneNumbers(phoneNumber)
-                .fetch({ fields: 'line_type_intelligence' });
-
-            const carrierName = lookup.lineTypeIntelligence?.carrier_name || null;
-            const lineType = lookup.lineTypeIntelligence?.type || null;
-            const mobileNetworkCode = lookup.lineTypeIntelligence?.mobile_network_code || null;
-            const isVodafone = this.isVodafoneCarrier(carrierName, mobileNetworkCode);
-
-            console.log('✅ Carrier validation:', { carrier: carrierName, isVodafone });
-
-            return { isVodafone, carrier: carrierName, lineType, mobileNetworkCode };
-        } catch (error) {
-            console.warn('⚠️ Carrier validation failed - proceeding optimistically');
-            return { isVodafone: false, carrier: null, lineType: null, mobileNetworkCode: null };
-        }
-    }
-
-    private isVodafoneCarrier(carrierName: string | null | undefined, mobileNetworkCode: string | null | undefined): boolean {
-        if (carrierName?.toLowerCase().includes('vodafone')) return true;
-        if (mobileNetworkCode === '03') return true;
-        return false;
-    }
-
-    private async skipVodafoneLead(leadId: string, carrier: string | null): Promise<void> {
-        const aiAgentId = process.env.AI_AGENT_USER_ID;
-
-        await pool.query(
-            `UPDATE leads SET status = 'NEKONTAKTOVAT', ai_call_status = 'skipped', updated_at = NOW() WHERE id = $1`,
-            [leadId]
-        );
-
-        await pool.query(
-            `INSERT INTO lead_comments (lead_id, user_id, old_status, new_status, comment)
-             VALUES ($1, $2, 'NOVY', 'NEKONTAKTOVAT', $3)`,
-            [leadId, aiAgentId, `🤖 Automaticky přeskočeno - zákazník má Vodafone\nOperátor: ${carrier || 'Vodafone Czech Republic'}`]
-        );
-
-        console.log('✅ Vodafone lead skipped:', leadId);
-    }
-
     private async updateLeadAfterCall(
         leadId: string,
         callSid: string,
@@ -206,7 +137,7 @@ export class CallOrchestrator {
             not_interested: 'ODMITNUTO',
             callback: 'ODKLADA',
             aggressive: 'NEKONTAKTOVAT',
-            already_vodafone: 'NEKONTAKTOVAT',
+            already_tmobile: 'NEKONTAKTOVAT',
             wrong_person: 'NEKONTAKTOVAT',
             no_answer: 'NEZVEDL_TELEFON',
         };
@@ -216,7 +147,7 @@ export class CallOrchestrator {
             not_interested: 'NEKONTAKTOVAT',
             callback: 'ODKLADA',
             aggressive: 'NEKONTAKTOVAT',
-            already_vodafone: 'NEKONTAKTOVAT',
+            already_tmobile: 'NEKONTAKTOVAT',
             wrong_person: 'NEKONTAKTOVAT',
             no_answer: 'NEZVEDL_TELEFON',
         };

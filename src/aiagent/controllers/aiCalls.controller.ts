@@ -39,7 +39,7 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
             console.log('🎯 Starting sequential calling...');
             for (const lead of leads) {
                 try {
-                    console.log(`📞 Calling lead ${lead.id} (${lead.company_name})...`);
+                    console.log(`📞 Calling lead ${lead.id} (${lead.phone})...`);
                     await callOrchestrator.processLead(lead.id);
                     console.log(`✅ Call completed for ${lead.id}`);
                 } catch (error) {

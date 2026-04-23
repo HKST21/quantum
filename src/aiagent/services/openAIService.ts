@@ -12,7 +12,6 @@ export class OpenAIService {
     }
 
     private buildConversationPrompt(): string {
-
         return `
 # TVOJE IDENTITA
 
@@ -89,12 +88,13 @@ Pokud zákazník cokoliv řekne BĚHEM pitch věty:
 → outcome=callback
 
 ## "UŽ JSEM U T-MOBILE"
-"Rozumím, ceník je určen pouze pro nové klienty, kteří by přešli od konkurence. Každopádně nevadí, přeji krásný den. Nashledanou."
-→ outcome=already_vodafone
+"Rozumím, ceník je určen pouze pro nové klienty přecházející od konkurence. Každopádně nevadí, přeji krásný den. Nashledanou."
+→ outcome=already_tmobile
 
-## "UŽ JSEM U VODAFONE" / JINÝ OPERÁTOR
-"Rozumím, ceník je určen pouze pro nové klienty, kteří by přešli od konkurence. Každopádně nevadí, přeji krásný den. Nashledanou."
-→ outcome=already_vodafone
+## "UŽ JSEM U VODAFONE" / "UŽ JSEM U O2" / JINÝ OPERÁTOR
+→ NEPŘERUŠUJ, POKRAČUJ V PITCHI - toto jsou přesně zákazníci které hledáme!
+→ Řekni: "Výborně! Právě proto volám - pro klienty přecházející od konkurence máme speciální VIP ceník. Můžu vám ho poslat do SMS? :)"
+→ Čekej na odpověď zákazníka
 
 ## "CO JE TO ZA PARTNERA?" / "KDO VOLÁ?"
 "Jsem Eva z Cante Trading, oficiální partner T-Mobile. Můžu Vám poslat ten VIP ceník do SMS? :)"
@@ -114,6 +114,9 @@ Pokud zákazník cokoliv řekne BĚHEM pitch věty:
 - Druhý: "Špatně vás slyším. Ano nebo ne? :)"
 - Třetí: "Omlouvám se, zavolám jindy." → outcome=callback
 
+## PROČ NEMÁTE MÉ ÚDAJE / ODKUD MÁTE MÉ ČÍSLO
+"Z důvodu GDPR pracujeme pouze s náhodně vygenerovanými telefonními čísly."
+
 ---
 
 # FUNCTION CALLING - KRITICKÉ!
@@ -127,7 +130,7 @@ Pokud zákazník cokoliv řekne BĚHEM pitch věty:
 # KONTEXT HOVORU
 
 Nemáš žádné osobní údaje zákazníka - ani jméno, ani email, ani název firmy, ani IČO.
-Máš pouze náhodné telefonní číslo ze seznamu čísel - to je absolutně vše.
+Máš pouze náhodné telefonní číslo - to je absolutně vše.
 Pokud se zákazník zeptá proč nemáš jeho údaje: "Z důvodu GDPR pracujeme pouze s náhodně vygenerovanými telefonními čísly."
 Pokud se zákazník zeptá odkud máš jeho číslo: "Číslo bylo náhodně vygenerováno."
 Pokud se zákazník zeptá na cokoliv osobního: "Bohužel žádné osobní údaje nemám, mám pouze toto náhodné telefonní číslo."
@@ -172,7 +175,7 @@ Pokud se zákazník zeptá na cokoliv osobního: "Bohužel žádné osobní úda
                                     properties: {
                                         outcome: {
                                             type: 'string',
-                                            enum: ['interested', 'not_interested', 'callback', 'aggressive', 'already_vodafone', 'wrong_person', 'no_answer'],
+                                            enum: ['interested', 'not_interested', 'callback', 'aggressive', 'already_tmobile', 'wrong_person', 'no_answer'],
                                         },
                                         confidence: { type: 'number', minimum: 0, maximum: 1 },
                                         reason: { type: 'string' },
@@ -246,9 +249,12 @@ Pokud se zákazník zeptá na cokoliv osobního: "Bohužel žádné osobní úda
     parseOutcome(functionCall: any): ConversationOutcome {
         const args = JSON.parse(functionCall.arguments);
         const outcomeMap: Record<string, any> = {
-            interested: 'interested', not_interested: 'not_interested',
-            callback: 'callback', aggressive: 'aggressive',
-            already_vodafone: 'already_vodafone', wrong_person: 'wrong_person',
+            interested: 'interested',
+            not_interested: 'not_interested',
+            callback: 'callback',
+            aggressive: 'aggressive',
+            already_tmobile: 'already_tmobile',
+            wrong_person: 'wrong_person',
             no_answer: 'no_answer',
         };
         return {

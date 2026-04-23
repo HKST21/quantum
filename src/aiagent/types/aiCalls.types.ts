@@ -13,7 +13,7 @@ export type AICallOutcome =
     | 'ODKLADA';
 
 export interface ConversationOutcome {
-    outcome: 'interested' | 'not_interested' | 'callback' | 'aggressive' | 'already_vodafone' | 'wrong_person' | 'no_answer';
+    outcome: 'interested' | 'not_interested' | 'callback' | 'aggressive' | 'already_tmobile' | 'wrong_person' | 'no_answer';
     transcript: string;
     aiNotes: string;
     duration: number;
