@@ -17,7 +17,7 @@ require('dotenv').config();
 const XLSX_FILE = '1stbatch.xlsx';
 
 // Eva UUID — přiřazeno AI agentovi
-const AI_AGENT_UUID = 'b831b5db-21b5-4652-a05c-a6418eaddc1a';
+const AI_AGENT_UUID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
 
 // ── DB CONNECTION ─────────────────────────────────────────────
 
