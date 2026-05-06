@@ -6,6 +6,7 @@ import phoneScreeningRoutes from './phoneScreening.routes';
 import invoiceDataRoutes from './invoiceData.routes';
 import leadsImportRoutes from './leadsImport.routes';
 import aiCallsRoutes from '../aiagent/routes/aiCalls.routes';
+import batchCallsRoutes from '../aiagent/routes/batchCalls.routes';
 
 const router = Router();
 
@@ -16,6 +17,7 @@ router.use('/leads', phoneScreeningRoutes);
 router.use('/leads', invoiceDataRoutes);
 router.use('/leads', leadsImportRoutes);
 router.use('/ai-calls', aiCallsRoutes);
+router.use('/ai-calls', batchCallsRoutes);
 
 router.get('/health', (_req, res) => {
     res.status(200).json({

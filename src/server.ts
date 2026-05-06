@@ -6,6 +6,7 @@ import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import http from 'http';
+import path from 'path';
 import { WebSocketServer } from 'ws';
 import pool, { testConnection } from './db/pool';
 import routes from './routes';
@@ -180,10 +181,27 @@ app.use(session({
 }));
 
 // ============================================
-// ROUTES
+// API ROUTES
 // ============================================
 
 app.use('/api', routes);
+
+// ============================================
+// FRONTEND — statické soubory na /crm
+// ============================================
+
+const frontendBuildPath = path.join(__dirname, '..', 'frontend', 'build');
+
+app.use('/crm', express.static(frontendBuildPath));
+
+// React router fallback — všechny /crm/* cesty vrátí index.html
+app.get('/crm/*', (_req: Request, res: Response) => {
+    res.sendFile(path.join(frontendBuildPath, 'index.html'));
+});
+
+// ============================================
+// ROOT
+// ============================================
 
 app.get('/', (_req: Request, res: Response) => {
     res.status(200).json({
@@ -197,6 +215,7 @@ app.get('/', (_req: Request, res: Response) => {
             leads: '/api/leads/*',
             aiCalls: '/api/ai-calls/*',
             websocket: 'ws://[host]/api/ai-calls/websocket',
+            frontend: '/crm',
         },
     });
 });
@@ -249,14 +268,15 @@ const startServer = async () => {
         }
 
         server.listen(PORT, () => {
-            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
             console.log('✅ Quantum CRM Backend Started');
-            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
             console.log(`🚀 Port: ${PORT}`);
             console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
             console.log(`🔌 WebSocket: ws://localhost:${PORT}/api/ai-calls/websocket`);
             console.log(`🤖 AI Calling: /api/ai-calls/*`);
-            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log(`🖥️  Frontend: /crm`);
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         });
     } catch (error) {
         console.error('❌ Failed to start server:', error);

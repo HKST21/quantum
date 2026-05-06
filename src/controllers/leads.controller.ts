@@ -81,7 +81,18 @@ export const listLeads = async (req: Request, res: Response, next: NextFunction)
                             has_tv, tv_count, tv_count_unknown,
                             notes, screened_at, screened_by, created_at, updated_at
                      FROM phone_screening WHERE lead_id = l.id
-                 ) ps) as phone_screening
+                 ) ps) as phone_screening,
+                (SELECT json_agg(acl_data ORDER BY acl_data.created_at DESC)
+                 FROM (
+                     SELECT
+                         id, call_sid, status, outcome, duration,
+                         ai_notes, recording_url, recording_sid,
+                         started_at, completed_at, created_at
+                     FROM ai_call_logs
+                     WHERE lead_id = l.id
+                     ORDER BY created_at DESC
+                     LIMIT 1
+                 ) acl_data) as ai_call_logs
              FROM leads l
              LEFT JOIN users u_assigned ON l.assigned_to = u_assigned.id
              INNER JOIN users u_created ON l.created_by = u_created.id
@@ -131,6 +142,20 @@ export const listLeads = async (req: Request, res: Response, next: NextFunction)
                 createdAt: row.phone_screening.created_at,
                 updatedAt: row.phone_screening.updated_at,
             } : null,
+            // Poslední AI hovor pro inline audio player v dashboardu
+            aiCallLogs: row.ai_call_logs ? row.ai_call_logs.map((log: any) => ({
+                id: log.id,
+                callSid: log.call_sid,
+                status: log.status,
+                outcome: log.outcome,
+                duration: log.duration,
+                aiNotes: log.ai_notes,
+                recordingUrl: log.recording_url,
+                recordingSid: log.recording_sid,
+                startedAt: log.started_at,
+                completedAt: log.completed_at,
+                createdAt: log.created_at,
+            })) : [],
         })) as LeadResponse[];
 
         const response: PaginatedResponse<LeadResponse> = {
@@ -220,7 +245,6 @@ export const getLeadDetail = async (req: Request, res: Response, next: NextFunct
             };
         }
 
-        // AI call logs
         const aiCallLogsResult = await pool.query(
             `SELECT id, lead_id, call_sid, status, outcome, duration, transcript,
                     ai_notes, recording_url, recording_sid, started_at, completed_at, created_at
