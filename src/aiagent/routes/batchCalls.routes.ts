@@ -10,6 +10,7 @@ import {
     blacklistLead,
     getAvgDuration,
     importLeads,
+    verifyPassword,
 } from '../controllers/batchCalls.controller';
 import { authenticate } from '../../middleware/authenticate';
 import { authorize } from '../../middleware/authorize';
@@ -30,7 +31,6 @@ const upload = multer({
     limits: { fileSize: 50 * 1024 * 1024 },
 });
 
-// Všechny endpointy vyžadují přihlášení + ADMIN roli
 router.use(authenticate, authorize(['ADMIN']));
 
 router.get('/batch-status', getBatchStatus);
@@ -41,6 +41,7 @@ router.get('/unanswered', getUnanswered);
 router.post('/retry-unanswered', retryUnanswered);
 router.get('/avg-duration', getAvgDuration);
 router.post('/import-leads', upload.single('file'), importLeads);
+router.post('/verify-password', verifyPassword);
 
 router.patch('/leads/:id/blacklist', blacklistLead);
 

@@ -22,7 +22,6 @@ const Calling: React.FC = () => {
 
     const pollRef = useRef<NodeJS.Timeout | null>(null);
 
-    // Načti meta data při prvním načtení
     useEffect(() => {
         const loadMeta = async () => {
             setLoadingMeta(true);
@@ -36,7 +35,6 @@ const Calling: React.FC = () => {
                 setAvgDuration(durRes);
                 setBatchStatus(statusRes);
                 setNovyCount(statusRes.queueSize);
-                // Nastav default max na min(100, queueSize)
                 setMaxCalls(Math.min(100, statusRes.queueSize));
             } catch (err) {
                 console.error('Failed to load meta:', err);
@@ -47,15 +45,12 @@ const Calling: React.FC = () => {
         loadMeta();
     }, []);
 
-    // Polling během volání
     const startPolling = useCallback(() => {
         if (pollRef.current) clearInterval(pollRef.current);
-
         pollRef.current = setInterval(async () => {
             try {
                 const status = await getBatchStatus();
                 setBatchStatus(status);
-
                 if (!status.isRunning && step === 'calling') {
                     clearInterval(pollRef.current!);
                     setStep('done');
@@ -67,12 +62,8 @@ const Calling: React.FC = () => {
     }, [step]);
 
     useEffect(() => {
-        if (step === 'calling') {
-            startPolling();
-        }
-        return () => {
-            if (pollRef.current) clearInterval(pollRef.current);
-        };
+        if (step === 'calling') startPolling();
+        return () => { if (pollRef.current) clearInterval(pollRef.current); };
     }, [step, startPolling]);
 
     const estimateTime = (calls: number): string => {
@@ -102,7 +93,6 @@ const Calling: React.FC = () => {
     };
 
     const handleMaxCallsChange = (value: number) => {
-        // Nesmí být více než počet NOVY leadů
         const capped = Math.max(1, Math.min(value, novyCount));
         setMaxCalls(capped);
     };
@@ -113,23 +103,23 @@ const Calling: React.FC = () => {
         setReauthLoading(true);
 
         try {
-            const res = await fetch('/api/auth/login', {
+            // Ověř heslo přes dedikovaný endpoint — bez 2FA požadavku
+            const res = await fetch('/api/ai-calls/verify-password', {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email: 'quantumconnectinfo@gmail.com',
-                    password,
-                }),
+                body: JSON.stringify({ password }),
             });
 
             if (!res.ok) {
-                setReauthError('Nesprávné heslo');
+                const data = await res.json();
+                setReauthError(data.error?.message || 'Nesprávné heslo');
                 setPassword('');
                 setReauthLoading(false);
                 return;
             }
 
+            // Heslo OK — spusť volání
             await startAICalling(maxCalls);
 
             const status = await getBatchStatus();
@@ -157,7 +147,6 @@ const Calling: React.FC = () => {
         setBatchStatus(null);
         setStartedAt(null);
         if (pollRef.current) clearInterval(pollRef.current);
-        // Znovu načti aktuální počet NOVY
         getBatchStatus().then(s => {
             setNovyCount(s.queueSize);
             setMaxCalls(Math.min(100, s.queueSize));
@@ -185,7 +174,6 @@ const Calling: React.FC = () => {
                         </div>
                         <div className="card-body">
 
-                            {/* Telefonní číslo Evy */}
                             <div className="form-group">
                                 <label className="form-label">Volající číslo (Eva)</label>
                                 <div style={{
@@ -202,13 +190,11 @@ const Calling: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Počet NOVY leadů */}
                             <div className="form-group">
                                 <label className="form-label">Dostupné leady ke kontaktování</label>
                                 {loadingMeta ? (
                                     <div className="loading-spinner" style={{ padding: '8px 0', justifyContent: 'flex-start' }}>
-                                        <span className="spinner" />
-                                        Načítám...
+                                        <span className="spinner" /> Načítám...
                                     </div>
                                 ) : (
                                     <div style={{
@@ -225,7 +211,6 @@ const Calling: React.FC = () => {
                                 )}
                             </div>
 
-                            {/* Počet hovorů */}
                             <div className="form-group">
                                 <label className="form-label">
                                     Počet hovorů v dávce
@@ -249,7 +234,6 @@ const Calling: React.FC = () => {
                                 )}
                             </div>
 
-                            {/* Odhad času */}
                             {avgDuration && novyCount > 0 && (
                                 <div className="alert alert-info">
                                     <div>
@@ -297,14 +281,16 @@ const Calling: React.FC = () => {
                         </div>
                         <div className="card-body">
                             <div className="alert alert-warning mb-16">
-                                Chystáš se spustit <strong>{maxCalls.toLocaleString('cs-CZ')} hovorů</strong> z čísla{' '}
-                                <strong style={{ fontFamily: 'monospace' }}>{twilioNumber}</strong>.
-                                <br />
-                                Odhadovaný čas: <strong>{estimateTime(maxCalls)}</strong>.
-                                <br />
-                                Dostupných leadů: <strong>{novyCount.toLocaleString('cs-CZ')}</strong>.
-                                <br /><br />
-                                Pro potvrzení zadej své heslo.
+                                <div>
+                                    Chystáš se spustit <strong>{maxCalls.toLocaleString('cs-CZ')} hovorů</strong> z čísla{' '}
+                                    <strong style={{ fontFamily: 'monospace' }}>{twilioNumber}</strong>.
+                                    <br />
+                                    Odhadovaný čas: <strong>{estimateTime(maxCalls)}</strong>.
+                                    <br />
+                                    Dostupných leadů: <strong>{novyCount.toLocaleString('cs-CZ')}</strong>.
+                                    <br /><br />
+                                    Pro potvrzení zadej své heslo.
+                                </div>
                             </div>
 
                             {reauthError && (
@@ -419,9 +405,7 @@ const Calling: React.FC = () => {
                         <div className="stat-card">
                             <div className="stat-label">Prům. délka</div>
                             <div className="stat-value">
-                                {batchStatus.today.avgDuration > 0
-                                    ? formatDuration(batchStatus.today.avgDuration)
-                                    : '—'}
+                                {batchStatus.today.avgDuration > 0 ? formatDuration(batchStatus.today.avgDuration) : '—'}
                             </div>
                         </div>
                     </div>

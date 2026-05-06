@@ -1,7 +1,46 @@
 import { Request, Response, NextFunction } from 'express';
 import pool from '../../db/pool';
+import bcrypt from 'bcrypt';
 
 const AI_AGENT_ID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
+
+// ============================================
+// POST /api/ai-calls/verify-password
+// Ověří heslo admina pro re-auth před spuštěním volání
+// Nevyžaduje 2FA — jen kontrola hesla
+// ============================================
+export const verifyPassword = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { password } = req.body;
+
+        if (!password) {
+            res.status(400).json({ error: { message: 'Heslo je povinné', statusCode: 400 } });
+            return;
+        }
+
+        // Načti hash hesla aktuálně přihlášeného uživatele
+        const result = await pool.query(
+            `SELECT password_hash FROM users WHERE id = $1 AND is_active = true`,
+            [req.user!.id]
+        );
+
+        if (result.rows.length === 0) {
+            res.status(401).json({ error: { message: 'Uživatel nenalezen', statusCode: 401 } });
+            return;
+        }
+
+        const isValid = await bcrypt.compare(password, result.rows[0].password_hash);
+
+        if (!isValid) {
+            res.status(401).json({ error: { message: 'Nesprávné heslo', statusCode: 401 } });
+            return;
+        }
+
+        res.status(200).json({ success: true });
+    } catch (error) {
+        next(error);
+    }
+};
 
 // ============================================
 // GET /api/ai-calls/batch-status
