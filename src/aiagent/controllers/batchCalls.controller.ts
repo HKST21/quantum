@@ -214,7 +214,7 @@ export const getUnanswered = async (_req: Request, res: Response, next: NextFunc
 // POST /api/ai-calls/retry-unanswered
 // Reset nedovolaných na NOVY — ochrana max 3 pokusy přes ai_call_logs
 // ============================================
-export const retryUnanswered = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const retryUnanswered = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         // Nejdřív ověříme kolik jich je eligible (bulletproof podmínka + max 3 pokusy)
         const eligibleResult = await pool.query(
