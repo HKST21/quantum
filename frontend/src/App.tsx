@@ -12,7 +12,19 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import './styles/global.css';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    const { isAuthenticated } = useAuth();
+    const { isAuthenticated, loading } = useAuth();
+
+    // Čekej dokud se neověří session přes /api/auth/me
+    // Bez tohoto by refresh stránky vždy odhlásil uživatele
+    if (loading) {
+        return (
+            <div className="loading-spinner" style={{ height: '100vh' }}>
+                <span className="spinner" />
+                <span style={{ color: 'var(--gray-400)', fontSize: 14 }}>Načítám...</span>
+            </div>
+        );
+    }
+
     if (!isAuthenticated) return <Navigate to="/crm/login" replace />;
     return <>{children}</>;
 };
