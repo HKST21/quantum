@@ -38,20 +38,20 @@ const BatchHistory: React.FC = () => {
         });
     };
 
-    // 5 úrovní konverze
+    // 5 úrovní konverze — posunuté o -1
     const getConversionStyle = (rate: number): React.CSSProperties => {
-        if (rate >= 7) return { background: '#14532d', color: '#fff' };
-        if (rate >= 6) return { background: '#16a34a', color: '#fff' };
-        if (rate >= 5) return { background: '#4ade80', color: '#14532d' };
-        if (rate >= 4) return { background: '#f59e0b', color: '#fff' };
+        if (rate >= 6) return { background: '#14532d', color: '#fff' };
+        if (rate >= 5) return { background: '#16a34a', color: '#fff' };
+        if (rate >= 4) return { background: '#4ade80', color: '#14532d' };
+        if (rate >= 3) return { background: '#f59e0b', color: '#fff' };
         return { background: '#dc2626', color: '#fff' };
     };
 
     const getConversionLabel = (rate: number): string => {
-        if (rate >= 7) return '🔥';
-        if (rate >= 6) return '✅';
-        if (rate >= 5) return '👍';
-        if (rate >= 4) return '⚠️';
+        if (rate >= 6) return '🔥';
+        if (rate >= 5) return '✅';
+        if (rate >= 4) return '👍';
+        if (rate >= 3) return '⚠️';
         return '❌';
     };
 
@@ -124,11 +124,11 @@ const BatchHistory: React.FC = () => {
                 <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
                     <span style={{ fontSize: 12, color: 'var(--gray-500)', marginRight: 4 }}>Konverze:</span>
                     {[
-                        { label: '≥7% 🔥', rate: 7 },
-                        { label: '≥6% ✅', rate: 6 },
-                        { label: '≥5% 👍', rate: 5 },
-                        { label: '≥4% ⚠️', rate: 4 },
-                        { label: '<4% ❌', rate: 2 },
+                        { label: '≥6% 🔥', rate: 6 },
+                        { label: '≥5% ✅', rate: 5 },
+                        { label: '≥4% 👍', rate: 4 },
+                        { label: '≥3% ⚠️', rate: 3 },
+                        { label: '<3% ❌', rate: 2 },
                     ].map((item) => (
                         <span
                             key={item.label}

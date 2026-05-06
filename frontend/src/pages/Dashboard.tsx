@@ -29,8 +29,8 @@ const Dashboard: React.FC = () => {
     const [page, setPage] = useState(1);
     const [totalPages, setTotalPages] = useState(1);
 
-    // Filtry
-    const [filterStatus, setFilterStatus] = useState('');
+    // Filtry — defaultně NOVY + Eva
+    const [filterStatus, setFilterStatus] = useState('NOVY');
     const [filterAssignedTo, setFilterAssignedTo] = useState(AI_AGENT_ID);
     const [filterSearch, setFilterSearch] = useState('');
     const [searchInput, setSearchInput] = useState('');
@@ -129,6 +129,7 @@ const Dashboard: React.FC = () => {
                     <p className="page-subtitle">
                         Celkem {total.toLocaleString('cs-CZ')} leadů
                         {filterAssignedTo === AI_AGENT_ID ? ' · Eva AI Agent' : ''}
+                        {filterStatus ? ` · ${STATUS_LABELS[filterStatus]?.label || filterStatus}` : ''}
                     </p>
                 </div>
                 <button className="btn btn-outline btn-sm" onClick={fetchLeads}>
@@ -178,12 +179,12 @@ const Dashboard: React.FC = () => {
                             Hledat
                         </button>
 
-                        {(filterStatus || filterSearch || filterAssignedTo !== AI_AGENT_ID) && (
+                        {(filterStatus !== 'NOVY' || filterSearch || filterAssignedTo !== AI_AGENT_ID) && (
                             <button
                                 type="button"
                                 className="btn btn-outline"
                                 onClick={() => {
-                                    setFilterStatus('');
+                                    setFilterStatus('NOVY');
                                     setFilterSearch('');
                                     setSearchInput('');
                                     setFilterAssignedTo(AI_AGENT_ID);

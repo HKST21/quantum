@@ -6,6 +6,7 @@ import Calling from './pages/Calling';
 import BatchHistory from './pages/BatchHistory';
 import BatchDetail from './pages/BatchDetail';
 import Unanswered from './pages/Unanswered';
+import Import from './pages/Import';
 import Layout from './components/Layout';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import './styles/global.css';
@@ -33,6 +34,7 @@ const App: React.FC = () => {
                                         <Route path="history" element={<BatchHistory />} />
                                         <Route path="history/:date" element={<BatchDetail />} />
                                         <Route path="unanswered" element={<Unanswered />} />
+                                        <Route path="import" element={<Import />} />
                                         <Route path="*" element={<Navigate to="/crm/dashboard" replace />} />
                                     </Routes>
                                 </Layout>

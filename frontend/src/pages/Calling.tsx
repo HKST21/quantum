@@ -12,6 +12,8 @@ const Calling: React.FC = () => {
     const [twilioNumber, setTwilioNumber] = useState<string>('');
     const [avgDuration, setAvgDuration] = useState<AvgDuration | null>(null);
     const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
+    const [novyCount, setNovyCount] = useState<number>(0);
+    const [loadingMeta, setLoadingMeta] = useState(true);
     const [password, setPassword] = useState('');
     const [reauthError, setReauthError] = useState('');
     const [reauthLoading, setReauthLoading] = useState(false);
@@ -19,20 +21,27 @@ const Calling: React.FC = () => {
     const [error, setError] = useState('');
 
     const pollRef = useRef<NodeJS.Timeout | null>(null);
-    const startCompletedRef = useRef<number>(0);
 
-    // Načti Twilio číslo a průměrnou délku hovoru
+    // Načti meta data při prvním načtení
     useEffect(() => {
         const loadMeta = async () => {
+            setLoadingMeta(true);
             try {
-                const [numRes, durRes] = await Promise.all([
+                const [numRes, durRes, statusRes] = await Promise.all([
                     getTwilioNumber(),
                     getAvgDuration(),
+                    getBatchStatus(),
                 ]);
                 setTwilioNumber(numRes.phone);
                 setAvgDuration(durRes);
+                setBatchStatus(statusRes);
+                setNovyCount(statusRes.queueSize);
+                // Nastav default max na min(100, queueSize)
+                setMaxCalls(Math.min(100, statusRes.queueSize));
             } catch (err) {
                 console.error('Failed to load meta:', err);
+            } finally {
+                setLoadingMeta(false);
             }
         };
         loadMeta();
@@ -47,7 +56,6 @@ const Calling: React.FC = () => {
                 const status = await getBatchStatus();
                 setBatchStatus(status);
 
-                // Detekce dokončení — volání skončilo
                 if (!status.isRunning && step === 'calling') {
                     clearInterval(pollRef.current!);
                     setStep('done');
@@ -67,7 +75,6 @@ const Calling: React.FC = () => {
         };
     }, [step, startPolling]);
 
-    // Odhad času
     const estimateTime = (calls: number): string => {
         if (!avgDuration) return '—';
         const totalSeconds = calls * avgDuration.totalPerCall;
@@ -77,11 +84,9 @@ const Calling: React.FC = () => {
         return `~${minutes}min`;
     };
 
-    // Zbývající čas během volání
     const remainingTime = (): string => {
         if (!batchStatus || !avgDuration) return '—';
-        const remaining = batchStatus.queueSize;
-        const totalSeconds = remaining * avgDuration.totalPerCall;
+        const totalSeconds = batchStatus.queueSize * avgDuration.totalPerCall;
         const hours = Math.floor(totalSeconds / 3600);
         const minutes = Math.floor((totalSeconds % 3600) / 60);
         if (hours > 0) return `~${hours}h ${minutes}min`;
@@ -89,7 +94,6 @@ const Calling: React.FC = () => {
         return '< 1 min';
     };
 
-    // Progress %
     const progressPercent = (): number => {
         if (!batchStatus) return 0;
         const total = batchStatus.today.completed + batchStatus.queueSize;
@@ -97,14 +101,18 @@ const Calling: React.FC = () => {
         return Math.round((batchStatus.today.completed / total) * 100);
     };
 
-    // Re-auth a spuštění
+    const handleMaxCallsChange = (value: number) => {
+        // Nesmí být více než počet NOVY leadů
+        const capped = Math.max(1, Math.min(value, novyCount));
+        setMaxCalls(capped);
+    };
+
     const handleReauth = async (e: React.FormEvent) => {
         e.preventDefault();
         setReauthError('');
         setReauthLoading(true);
 
         try {
-            // Ověř heslo přes login endpoint
             const res = await fetch('/api/auth/login', {
                 method: 'POST',
                 credentials: 'include',
@@ -122,13 +130,10 @@ const Calling: React.FC = () => {
                 return;
             }
 
-            // Spusť volání
             await startAICalling(maxCalls);
 
-            // Načti počáteční stav
             const status = await getBatchStatus();
             setBatchStatus(status);
-            startCompletedRef.current = status.today.completed;
             setStartedAt(new Date());
             setStep('calling');
         } catch (err: any) {
@@ -152,6 +157,12 @@ const Calling: React.FC = () => {
         setBatchStatus(null);
         setStartedAt(null);
         if (pollRef.current) clearInterval(pollRef.current);
+        // Znovu načti aktuální počet NOVY
+        getBatchStatus().then(s => {
+            setNovyCount(s.queueSize);
+            setMaxCalls(Math.min(100, s.queueSize));
+            setBatchStatus(s);
+        });
     };
 
     return (
@@ -163,9 +174,7 @@ const Calling: React.FC = () => {
                 </div>
             </div>
 
-            {error && (
-                <div className="alert alert-danger mb-16">⚠️ {error}</div>
-            )}
+            {error && <div className="alert alert-danger mb-16">⚠️ {error}</div>}
 
             {/* ── KROK 1: NASTAVENÍ ── */}
             {step === 'setup' && (
@@ -193,24 +202,55 @@ const Calling: React.FC = () => {
                                 </div>
                             </div>
 
+                            {/* Počet NOVY leadů */}
+                            <div className="form-group">
+                                <label className="form-label">Dostupné leady ke kontaktování</label>
+                                {loadingMeta ? (
+                                    <div className="loading-spinner" style={{ padding: '8px 0', justifyContent: 'flex-start' }}>
+                                        <span className="spinner" />
+                                        Načítám...
+                                    </div>
+                                ) : (
+                                    <div style={{
+                                        padding: '9px 12px',
+                                        background: novyCount > 0 ? 'var(--success-light)' : 'var(--danger-light)',
+                                        border: `1px solid ${novyCount > 0 ? '#bbf7d0' : '#fecaca'}`,
+                                        borderRadius: 'var(--radius)',
+                                        fontWeight: 700,
+                                        fontSize: 18,
+                                        color: novyCount > 0 ? 'var(--success)' : 'var(--danger)',
+                                    }}>
+                                        {novyCount.toLocaleString('cs-CZ')} leadů se statusem NOVY
+                                    </div>
+                                )}
+                            </div>
+
                             {/* Počet hovorů */}
                             <div className="form-group">
-                                <label className="form-label">Počet hovorů v dávce</label>
+                                <label className="form-label">
+                                    Počet hovorů v dávce
+                                    <span style={{ fontWeight: 400, color: 'var(--gray-400)', marginLeft: 8, fontSize: 12 }}>
+                    (max {novyCount.toLocaleString('cs-CZ')})
+                  </span>
+                                </label>
                                 <input
                                     type="number"
                                     className="form-input"
                                     min={1}
-                                    max={1000}
+                                    max={novyCount}
                                     value={maxCalls}
-                                    onChange={(e) => setMaxCalls(Math.max(1, Math.min(1000, Number(e.target.value))))}
+                                    onChange={(e) => handleMaxCallsChange(Number(e.target.value))}
+                                    disabled={novyCount === 0 || loadingMeta}
                                 />
-                                <div style={{ fontSize: 12, color: 'var(--gray-400)', marginTop: 4 }}>
-                                    Max. 1000 hovorů najednou
-                                </div>
+                                {maxCalls >= novyCount && novyCount > 0 && (
+                                    <div style={{ fontSize: 12, color: 'var(--warning)', marginTop: 4 }}>
+                                        ⚠️ Voláš všechny dostupné leady
+                                    </div>
+                                )}
                             </div>
 
                             {/* Odhad času */}
-                            {avgDuration && (
+                            {avgDuration && novyCount > 0 && (
                                 <div className="alert alert-info">
                                     <div>
                                         <div style={{ fontWeight: 600, marginBottom: 4 }}>
@@ -230,9 +270,16 @@ const Calling: React.FC = () => {
                                 </div>
                             )}
 
+                            {novyCount === 0 && !loadingMeta && (
+                                <div className="alert alert-danger">
+                                    ❌ Žádné leady se statusem NOVY. Nejdřív importuj leady nebo zařaď nedovolané zpět do fronty.
+                                </div>
+                            )}
+
                             <button
                                 className="btn btn-primary btn-lg w-full"
                                 onClick={() => setStep('reauth')}
+                                disabled={novyCount === 0 || loadingMeta}
                             >
                                 Pokračovat k ověření →
                             </button>
@@ -250,9 +297,12 @@ const Calling: React.FC = () => {
                         </div>
                         <div className="card-body">
                             <div className="alert alert-warning mb-16">
-                                Chystáš se spustit <strong>{maxCalls} hovorů</strong> z čísla{' '}
+                                Chystáš se spustit <strong>{maxCalls.toLocaleString('cs-CZ')} hovorů</strong> z čísla{' '}
                                 <strong style={{ fontFamily: 'monospace' }}>{twilioNumber}</strong>.
+                                <br />
                                 Odhadovaný čas: <strong>{estimateTime(maxCalls)}</strong>.
+                                <br />
+                                Dostupných leadů: <strong>{novyCount.toLocaleString('cs-CZ')}</strong>.
                                 <br /><br />
                                 Pro potvrzení zadej své heslo.
                             </div>
@@ -307,8 +357,6 @@ const Calling: React.FC = () => {
             {/* ── KROK 3: PROBÍHÁ VOLÁNÍ ── */}
             {step === 'calling' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
-
-                    {/* Live feed */}
                     <div className="live-feed mb-16">
                         <span className="live-dot" />
                         {batchStatus.isRunning && batchStatus.currentCall ? (
@@ -325,7 +373,6 @@ const Calling: React.FC = () => {
                         )}
                     </div>
 
-                    {/* Progress */}
                     <div className="card mb-16">
                         <div className="card-body">
                             <div className="flex justify-between items-center mb-8">
@@ -334,14 +381,9 @@ const Calling: React.FC = () => {
                   {batchStatus.today.completed} hovorů dokončeno
                 </span>
                             </div>
-
                             <div className="progress-wrapper">
-                                <div
-                                    className="progress-bar"
-                                    style={{ width: `${progressPercent()}%` }}
-                                />
+                                <div className="progress-bar" style={{ width: `${progressPercent()}%` }} />
                             </div>
-
                             <div className="flex justify-between items-center mt-8">
                 <span style={{ fontSize: 12, color: 'var(--gray-400)' }}>
                   {progressPercent()}% dokončeno
@@ -353,7 +395,6 @@ const Calling: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* Statistiky */}
                     <div className="stats-grid mb-16">
                         <div className="stat-card">
                             <div className="stat-label">Celkem hovorů</div>
@@ -403,7 +444,6 @@ const Calling: React.FC = () => {
                         )}
                     </div>
 
-                    {/* Finální statistiky */}
                     <div className="stats-grid mb-24">
                         <div className="stat-card">
                             <div className="stat-label">Celkem hovorů</div>

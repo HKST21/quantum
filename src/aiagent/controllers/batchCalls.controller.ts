@@ -338,3 +338,134 @@ export const getAvgDuration = async (_req: Request, res: Response, next: NextFun
         next(error);
     }
 };
+
+// ============================================
+// POST /api/ai-calls/import-leads
+// Import telefonních čísel z XLSX — první sloupec
+// Normalizace: 605524894 → +420605524894
+// Deduplication přes phone
+// ============================================
+export const importLeads = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        if (!req.file) {
+            res.status(400).json({ error: { message: 'Soubor nebyl nahrán', statusCode: 400 } });
+            return;
+        }
+
+        const XLSX = require('xlsx');
+        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const rawData = XLSX.utils.sheet_to_json(worksheet, {
+            header: 1,
+            defval: '',
+            blankrows: false,
+        }) as any[][];
+
+        if (rawData.length === 0) {
+            res.status(400).json({ error: { message: 'Soubor je prázdný', statusCode: 400 } });
+            return;
+        }
+
+        // Normalizace čísla na +420XXXXXXXXX
+        const normalizePhone = (raw: any): string | null => {
+            const str = String(raw).replace(/[\s\-\(\)\.]/g, '').trim();
+            if (!str) return null;
+
+            // Už má +420
+            if (/^\+420\d{9}$/.test(str)) return str;
+            // Má 00420
+            if (/^00420\d{9}$/.test(str)) return `+${str.slice(2)}`;
+            // Má 420 bez +
+            if (/^420\d{9}$/.test(str)) return `+${str}`;
+            // Samo 9místné číslo
+            if (/^\d{9}$/.test(str)) return `+420${str}`;
+
+            return null;
+        };
+
+        const phones: string[] = [];
+        const invalid: string[] = [];
+
+        // Procházíme všechny řádky — bereme první sloupec
+        // Přeskočíme header pokud je textový
+        for (let i = 0; i < rawData.length; i++) {
+            const row = rawData[i];
+            const raw = row[0];
+            if (!raw) continue;
+
+            // Přeskoč header řádek pokud obsahuje text
+            if (i === 0 && isNaN(Number(String(raw).replace(/[\s\-\(\)\.+]/g, '')))) continue;
+
+            const normalized = normalizePhone(raw);
+            if (normalized) {
+                phones.push(normalized);
+            } else {
+                invalid.push(String(raw));
+            }
+        }
+
+        if (phones.length === 0) {
+            res.status(400).json({
+                error: { message: 'Žádná platná telefonní čísla nebyla nalezena', statusCode: 400 },
+                invalid,
+            });
+            return;
+        }
+
+        // Bulk insert s deduplication přes phone
+        const companyNames = phones.map(() => '');
+        const legalForms = phones.map(() => '');
+        const icos = phones.map(() => '');
+        const contactPersons = phones.map(() => '');
+        const emails = phones.map(() => '');
+        const assignedTos = phones.map(() => AI_AGENT_ID);
+        const createdBys = phones.map(() => AI_AGENT_ID);
+
+        const insertResult = await pool.query(
+            `WITH input_data AS (
+                SELECT
+                    unnest($1::varchar[]) as company_name,
+                    unnest($2::varchar[]) as legal_form,
+                    unnest($3::varchar[]) as ico,
+                    unnest($4::varchar[]) as contact_person,
+                    unnest($5::varchar[]) as phone,
+                    unnest($6::varchar[]) as email,
+                    unnest($7::uuid[]) as assigned_to,
+                    unnest($8::uuid[]) as created_by
+            ),
+            filtered_data AS (
+                SELECT id.*
+                FROM input_data id
+                LEFT JOIN leads l ON l.phone = id.phone
+                WHERE l.phone IS NULL
+            )
+            INSERT INTO leads (
+                company_name, legal_form, ico, contact_person, phone, email,
+                status, invoice_promised, assigned_to, created_by, created_at, updated_at
+            )
+            SELECT
+                company_name, legal_form, ico, contact_person, phone, email,
+                'NOVY'::lead_status, false, assigned_to, created_by, NOW(), NOW()
+            FROM filtered_data
+            RETURNING phone`,
+            [companyNames, legalForms, icos, contactPersons, phones, emails, assignedTos, createdBys]
+        );
+
+        const inserted = insertResult.rows.length;
+        const duplicates = phones.length - inserted;
+
+        res.status(200).json({
+            success: true,
+            summary: {
+                total: phones.length,
+                inserted,
+                duplicates,
+                invalid: invalid.length,
+            },
+            invalidNumbers: invalid.slice(0, 50),
+        });
+    } catch (error) {
+        next(error);
+    }
+};

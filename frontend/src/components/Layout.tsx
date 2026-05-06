@@ -20,6 +20,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         { path: '/crm/dashboard', label: 'Dashboard', icon: '📋' },
         { path: '/crm/calling', label: 'AI Volání', icon: '📞' },
         { path: '/crm/unanswered', label: 'Nedovolané', icon: '🔁' },
+        { path: '/crm/import', label: 'Import leadů', icon: '⬆' },
         { path: '/crm/history', label: 'Historie dávek', icon: '📊' },
     ];
 

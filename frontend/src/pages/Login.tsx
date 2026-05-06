@@ -45,7 +45,7 @@ const Login: React.FC = () => {
             <div className="login-card">
                 <div className="login-logo">
                     <h1>Quantum CRM</h1>
-                    <p>AI Calling System — Cante Trading</p>
+                    <p>TRUBKY ENTERPRISE SYSTEM</p>
                 </div>
 
                 {!pendingEmail ? (

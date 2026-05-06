@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import multer from 'multer';
 import {
     getBatchStatus,
     getBatchResults,
@@ -8,11 +9,26 @@ import {
     retryUnanswered,
     blacklistLead,
     getAvgDuration,
+    importLeads,
 } from '../controllers/batchCalls.controller';
 import { authenticate } from '../../middleware/authenticate';
 import { authorize } from '../../middleware/authorize';
 
 const router = Router();
+
+const upload = multer({
+    storage: multer.memoryStorage(),
+    fileFilter: (_req, file, cb) => {
+        const allowed = [
+            'application/vnd.ms-excel',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.ms-excel.sheet.macroEnabled.12',
+        ];
+        if (allowed.includes(file.mimetype)) cb(null, true);
+        else cb(new Error('Pouze Excel soubory jsou povoleny'));
+    },
+    limits: { fileSize: 50 * 1024 * 1024 },
+});
 
 // Všechny endpointy vyžadují přihlášení + ADMIN roli
 router.use(authenticate, authorize(['ADMIN']));
@@ -24,8 +40,8 @@ router.get('/twilio-number', getTwilioNumber);
 router.get('/unanswered', getUnanswered);
 router.post('/retry-unanswered', retryUnanswered);
 router.get('/avg-duration', getAvgDuration);
+router.post('/import-leads', upload.single('file'), importLeads);
 
-// Blacklist je na leads routě ale dáme ho sem pro přehlednost
 router.patch('/leads/:id/blacklist', blacklistLead);
 
 export default router;
