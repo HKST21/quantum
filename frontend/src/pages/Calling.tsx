@@ -10,13 +10,39 @@ interface AgentOption {
     id: string;
     name: string;
     description: string;
+    pitch: string;
+    successLine: string;
 }
 
 const AGENTS: AgentOption[] = [
-    { id: '53c65ca7-68bc-4948-83e5-35a64c17f0fb', name: 'Eva V1', description: 'VIP ceník do SMS' },
-    { id: 'aeec78ff-a86b-4cab-b33a-adeb7c94f08e', name: 'Eva V2', description: 'Šetříme klientům až 40%' },
-    { id: 'e7a469bb-4783-4f96-b961-03dd503e5bfa', name: 'Eva V3', description: 'Nepřeplácíte za služby?' },
-    { id: 'f4adb349-70c3-4e63-8670-81f6c177f61d', name: 'Eva V4', description: 'Nezávazné porovnání' },
+    {
+        id: '53c65ca7-68bc-4948-83e5-35a64c17f0fb',
+        name: 'Eva V1',
+        description: 'VIP ceník do SMS',
+        pitch: 'Volám z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP CENÍK?',
+        successLine: 'Skvěle! Kolega se ozve a připraví ceník přímo na míru do té SMS. Hezký den!',
+    },
+    {
+        id: 'aeec78ff-a86b-4cab-b33a-adeb7c94f08e',
+        name: 'Eva V2',
+        description: 'Šetříme klientům až 40%',
+        pitch: 'T-Mobile partner u telefonu, šetříme svým klientům až 40%, máte zájem o dvouminutovou kontrolu ZDARMA od našeho specialisty?',
+        successLine: 'Super, kolega se ozve, rychle s Vámi projde současné podmínky a zjistí, jak Vám zajistit výhodnější cenu. Hezký den!',
+    },
+    {
+        id: 'e7a469bb-4783-4f96-b961-03dd503e5bfa',
+        name: 'Eva V3',
+        description: 'Nepřeplácíte za služby?',
+        pitch: 'T-Mobile partner u telefonu, volám abych zjistila, zda klienti nepřeplácí za služby u svého operátora, chcete domluvit dvouminutový kontakt s naším specialistou?',
+        successLine: 'Super, kolega se ozve, rychle s Vámi projde současné podmínky a zjistí, jak Vám zajistit výhodnější cenu. Hezký den!',
+    },
+    {
+        id: 'f4adb349-70c3-4e63-8670-81f6c177f61d',
+        name: 'Eva V4',
+        description: 'Nezávazné porovnání',
+        pitch: 'Volám za T-Mobile partner, je možné, že u operátora zbytečně přeplácíte. Může Vám kolega zdarma nechat udělat NEZÁVAZNÉ porovnání?',
+        successLine: 'Super, kolega se ozve, rychle s Vámi projde současné podmínky a zjistí, jak Vám zajistit výhodnější cenu. Hezký den!',
+    },
 ];
 
 const Calling: React.FC = () => {
@@ -139,7 +165,6 @@ const Calling: React.FC = () => {
             }
 
             await startAICalling(maxCalls, selectedAgent.id);
-
             const status = await getBatchStatus(selectedAgent.id);
             setBatchStatus(status);
             setStartedAt(new Date());
@@ -181,7 +206,7 @@ const Calling: React.FC = () => {
 
             {/* ── KROK 1: NASTAVENÍ ── */}
             {step === 'setup' && (
-                <div style={{ maxWidth: 560 }}>
+                <div style={{ maxWidth: 580 }}>
                     <div className="card mb-16">
                         <div className="card-header">
                             <span className="card-title">📞 Konfigurace dávky</span>
@@ -202,6 +227,28 @@ const Calling: React.FC = () => {
                                         </option>
                                     ))}
                                 </select>
+                            </div>
+
+                            {/* Pitch preview */}
+                            <div style={{
+                                background: '#f8faff',
+                                border: '1px solid #c7d7f9',
+                                borderRadius: 'var(--radius)',
+                                padding: '12px 14px',
+                                marginBottom: 16,
+                            }}>
+                                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>
+                                    🎙 Pitch věta
+                                </div>
+                                <div style={{ fontSize: 13, color: 'var(--gray-800)', lineHeight: 1.6, fontStyle: 'italic' }}>
+                                    „{selectedAgent.pitch}"
+                                </div>
+                                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--success)', textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: 10, marginBottom: 6 }}>
+                                    ✅ Při souhlasu
+                                </div>
+                                <div style={{ fontSize: 13, color: 'var(--gray-700)', lineHeight: 1.6, fontStyle: 'italic' }}>
+                                    „{selectedAgent.successLine}"
+                                </div>
                             </div>
 
                             {/* Telefonní číslo */}
@@ -382,7 +429,7 @@ const Calling: React.FC = () => {
                         fontWeight: 600,
                         marginBottom: 12,
                     }}>
-                        🤖 Agent: {selectedAgent.name} — {selectedAgent.description}
+                        🤖 {selectedAgent.name} — „{selectedAgent.pitch.slice(0, 60)}..."
                     </div>
 
                     <div className="live-feed mb-16">
