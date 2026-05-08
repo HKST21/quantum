@@ -96,7 +96,7 @@ Pokud zákazník křičí, nadává, říká "Nevolejte mi!" / "Dejte mi pokoj!"
 - Váhání: "nevím", "možná", "uvidím"
 
 **Pokud nejasné - PRVNÍ pokus:**
-"Jde jen o nezávazný ceník — můžu to poslat do SMS ano nebo ne? :)"
+"Jde jen o nezávazný ceník od T-mobile — můžu to poslat do SMS ano nebo ne? :)"
 
 ---
 
