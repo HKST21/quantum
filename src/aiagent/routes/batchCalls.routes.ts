@@ -11,6 +11,7 @@ import {
     getAvgDuration,
     importLeads,
     verifyPassword,
+    reassignLeads,
 } from '../controllers/batchCalls.controller';
 import { authenticate } from '../../middleware/authenticate';
 import { authorize } from '../../middleware/authorize';
@@ -42,6 +43,7 @@ router.post('/retry-unanswered', retryUnanswered);
 router.get('/avg-duration', getAvgDuration);
 router.post('/import-leads', upload.single('file'), importLeads);
 router.post('/verify-password', verifyPassword);
+router.post('/reassign-leads', reassignLeads);
 
 router.patch('/leads/:id/blacklist', blacklistLead);
 

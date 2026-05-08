@@ -1,22 +1,13 @@
 const API_BASE = '/api';
 
-// ============================================
-// HELPER
-// ============================================
-
 const fetchJson = async (url: string, options?: RequestInit) => {
     const res = await fetch(`${API_BASE}${url}`, {
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         ...options,
     });
-
     const data = await res.json();
-
-    if (!res.ok) {
-        throw new Error(data.error?.message || `HTTP ${res.status}`);
-    }
-
+    if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
     return data;
 };
 
@@ -43,20 +34,11 @@ export interface Lead {
 
 export interface LeadsResponse {
     data: Lead[];
-    pagination: {
-        page: number;
-        limit: number;
-        total: number;
-        totalPages: number;
-    };
+    pagination: { page: number; limit: number; total: number; totalPages: number; };
 }
 
 export const getLeads = (params: {
-    status?: string;
-    assignedTo?: string;
-    search?: string;
-    page?: number;
-    limit?: number;
+    status?: string; assignedTo?: string; search?: string; page?: number; limit?: number;
 }): Promise<LeadsResponse> => {
     const query = new URLSearchParams();
     if (params.status) query.set('status', params.status);
@@ -70,6 +52,12 @@ export const getLeads = (params: {
 export const blacklistLead = (id: string) =>
     fetchJson(`/ai-calls/leads/${id}/blacklist`, { method: 'PATCH' });
 
+export const reassignLeads = (fromAgentId: string, toAgentId: string, count: number) =>
+    fetchJson('/ai-calls/reassign-leads', {
+        method: 'POST',
+        body: JSON.stringify({ fromAgentId, toAgentId, count }),
+    });
+
 // ============================================
 // AI CALLS — BATCH
 // ============================================
@@ -78,59 +66,33 @@ export interface BatchStatus {
     isRunning: boolean;
     currentCall: { phone: string; companyName: string } | null;
     today: {
-        completed: number;
-        interested: number;
-        noAnswer: number;
-        rejected: number;
-        callback: number;
-        avgDuration: number;
-        conversionRate: number;
+        completed: number; interested: number; noAnswer: number;
+        rejected: number; callback: number; avgDuration: number; conversionRate: number;
     };
     queueSize: number;
 }
 
 export interface BatchHistoryItem {
-    datum: string;
-    celkemHovoru: number;
-    completed: number;
-    interested: number;
-    noAnswer: number;
-    rejected: number;
-    callback: number;
-    avgDuration: number;
-    conversionRate: number;
+    datum: string; celkemHovoru: number; completed: number; interested: number;
+    noAnswer: number; rejected: number; callback: number; avgDuration: number; conversionRate: number;
 }
 
 export interface BatchResultLead {
-    telefon: string;
-    jmeno: string;
-    firma: string;
-    poznamka_evy: string;
-    nahravka: string;
-    delka_sec: number;
-    datum_hovoru: string;
+    telefon: string; jmeno: string; firma: string;
+    poznamka_evy: string; nahravka: string; delka_sec: number; datum_hovoru: string;
 }
 
 export interface UnansweredLead {
-    id: string;
-    phone: string;
-    companyName: string;
-    status: string;
-    totalAttempts: number;
-    attemptsWithRecording: number;
+    id: string; phone: string; companyName: string;
+    status: string; totalAttempts: number; attemptsWithRecording: number;
 }
 
 export interface AvgDuration {
-    avgDuration: number;
-    overhead: number;
-    totalPerCall: number;
-    sampleSize: number;
+    avgDuration: number; overhead: number; totalPerCall: number; sampleSize: number;
 }
 
 export interface Agent {
-    id: string;
-    fullName: string;
-    email: string;
+    id: string; fullName: string; email: string;
 }
 
 export const getBatchStatus = (agentUserId?: string): Promise<BatchStatus> => {
@@ -138,8 +100,10 @@ export const getBatchStatus = (agentUserId?: string): Promise<BatchStatus> => {
     return fetchJson(`/ai-calls/batch-status${query}`);
 };
 
-export const getBatchResults = (date: string): Promise<{ date: string; leads: BatchResultLead[]; total: number }> =>
-    fetchJson(`/ai-calls/batch-results?date=${date}`);
+export const getBatchResults = (date: string, agentUserId?: string): Promise<{ date: string; leads: BatchResultLead[]; total: number }> => {
+    const query = agentUserId ? `&agentUserId=${agentUserId}` : '';
+    return fetchJson(`/ai-calls/batch-results?date=${date}${query}`);
+};
 
 export const getBatchHistory = (agentUserId?: string): Promise<{ batches: BatchHistoryItem[] }> => {
     const query = agentUserId ? `?agentUserId=${agentUserId}` : '';
@@ -177,11 +141,7 @@ export const getAgents = (): Promise<{ users: Agent[] }> =>
 // ============================================
 
 export interface User {
-    id: string;
-    email: string;
-    fullName: string;
-    role: string;
-    isActive: boolean;
+    id: string; email: string; fullName: string; role: string; isActive: boolean;
 }
 
 export const getUsers = (): Promise<{ users: User[] }> =>

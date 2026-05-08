@@ -13,29 +13,23 @@ const getAgentId = (req: Request): string =>
 export const verifyPassword = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         const { password } = req.body;
-
         if (!password) {
             res.status(400).json({ error: { message: 'Heslo je povinné', statusCode: 400 } });
             return;
         }
-
         const result = await pool.query(
             `SELECT password_hash FROM users WHERE id = $1 AND is_active = true`,
             [req.user!.id]
         );
-
         if (result.rows.length === 0) {
             res.status(401).json({ error: { message: 'Uživatel nenalezen', statusCode: 401 } });
             return;
         }
-
         const isValid = await bcrypt.compare(password, result.rows[0].password_hash);
-
         if (!isValid) {
             res.status(401).json({ error: { message: 'Nesprávné heslo', statusCode: 401 } });
             return;
         }
-
         res.status(200).json({ success: true });
     } catch (error) {
         next(error);
@@ -111,7 +105,7 @@ export const getBatchStatus = async (req: Request, res: Response, next: NextFunc
 };
 
 // ============================================
-// GET /api/ai-calls/batch-results?date=YYYY-MM-DD
+// GET /api/ai-calls/batch-results?date=&agentUserId=
 // ============================================
 export const getBatchResults = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -137,11 +131,7 @@ export const getBatchResults = async (req: Request, res: Response, next: NextFun
             [date, agentId]
         );
 
-        res.status(200).json({
-            date,
-            leads: result.rows,
-            total: result.rows.length,
-        });
+        res.status(200).json({ date, leads: result.rows, total: result.rows.length });
     } catch (error) {
         next(error);
     }
@@ -266,9 +256,7 @@ export const retryUnanswered = async (req: Request, res: Response, next: NextFun
             `SELECT l.id
              FROM leads l
              LEFT JOIN ai_call_logs acl ON l.id = acl.lead_id
-             WHERE
-                l.status = 'NEZVEDL_TELEFON'
-                AND l.assigned_to = $1
+             WHERE l.status = 'NEZVEDL_TELEFON' AND l.assigned_to = $1
              GROUP BY l.id
              HAVING
                 COUNT(acl.recording_url) FILTER (
@@ -287,13 +275,8 @@ export const retryUnanswered = async (req: Request, res: Response, next: NextFun
 
         const updateResult = await pool.query(
             `UPDATE leads
-             SET
-                status = 'NOVY',
-                ai_call_attempts = 0,
-                ai_call_status = NULL,
-                updated_at = NOW()
-             WHERE id = ANY($1)
-             RETURNING id`,
+             SET status = 'NOVY', ai_call_attempts = 0, ai_call_status = NULL, updated_at = NOW()
+             WHERE id = ANY($1) RETURNING id`,
             [eligibleIds]
         );
 
@@ -312,17 +295,11 @@ export const retryUnanswered = async (req: Request, res: Response, next: NextFun
 export const getAvgDuration = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         const result = await pool.query(
-            `SELECT
-                ROUND(AVG(duration))    AS avg_duration,
-                COUNT(*)                AS sample_size
+            `SELECT ROUND(AVG(duration)) AS avg_duration, COUNT(*) AS sample_size
              FROM (
-                 SELECT duration
-                 FROM ai_call_logs
-                 WHERE duration IS NOT NULL
-                 AND duration > 0
-                 AND status = 'completed'
-                 ORDER BY created_at DESC
-                 LIMIT 100
+                 SELECT duration FROM ai_call_logs
+                 WHERE duration IS NOT NULL AND duration > 0 AND status = 'completed'
+                 ORDER BY created_at DESC LIMIT 100
              ) recent`
         );
 
@@ -330,11 +307,70 @@ export const getAvgDuration = async (_req: Request, res: Response, next: NextFun
         const sampleSize = parseInt(result.rows[0].sample_size || 0);
         const overhead = 8;
 
+        res.status(200).json({ avgDuration, overhead, totalPerCall: avgDuration + overhead, sampleSize });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// POST /api/ai-calls/reassign-leads
+// Hromadné přeřazení NOVY leadů mezi agenty (od nejstarších)
+// ============================================
+export const reassignLeads = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { fromAgentId, toAgentId, count } = req.body;
+
+        if (!fromAgentId || !toAgentId || !count) {
+            res.status(400).json({ error: { message: 'Chybí parametry: fromAgentId, toAgentId, count', statusCode: 400 } });
+            return;
+        }
+
+        if (fromAgentId === toAgentId) {
+            res.status(400).json({ error: { message: 'Zdrojový a cílový agent musí být různí', statusCode: 400 } });
+            return;
+        }
+
+        if (count < 1 || count > 10000) {
+            res.status(400).json({ error: { message: 'Počet musí být mezi 1 a 10000', statusCode: 400 } });
+            return;
+        }
+
+        // Ověř že oba agenti existují
+        const agentsCheck = await pool.query(
+            `SELECT id, full_name FROM users WHERE id = ANY($1) AND is_active = true`,
+            [[fromAgentId, toAgentId]]
+        );
+
+        if (agentsCheck.rows.length !== 2) {
+            res.status(400).json({ error: { message: 'Jeden nebo oba agenti nenalezeni', statusCode: 400 } });
+            return;
+        }
+
+        // Přeřaď leady — nejstarší první (od spoda nahoru)
+        const result = await pool.query(
+            `UPDATE leads
+             SET assigned_to = $1, updated_at = NOW()
+             WHERE id IN (
+                 SELECT id FROM leads
+                 WHERE status = 'NOVY'
+                 AND assigned_to = $2
+                 AND (ai_call_status IS NULL OR ai_call_status = 'failed')
+                 ORDER BY created_at ASC
+                 LIMIT $3
+             )
+             RETURNING id`,
+            [toAgentId, fromAgentId, count]
+        );
+
+        const reassigned = result.rows.length;
+        const fromAgent = agentsCheck.rows.find((a: any) => a.id === fromAgentId);
+        const toAgent = agentsCheck.rows.find((a: any) => a.id === toAgentId);
+
         res.status(200).json({
-            avgDuration,
-            overhead,
-            totalPerCall: avgDuration + overhead,
-            sampleSize,
+            success: true,
+            reassigned,
+            message: `${reassigned} leadů přeřazeno z ${fromAgent?.full_name} na ${toAgent?.full_name}`,
         });
     } catch (error) {
         next(error);
@@ -358,9 +394,7 @@ export const importLeads = async (req: Request, res: Response, next: NextFunctio
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         const rawData = XLSX.utils.sheet_to_json(worksheet, {
-            header: 1,
-            defval: '',
-            blankrows: false,
+            header: 1, defval: '', blankrows: false,
         }) as any[][];
 
         if (rawData.length === 0) {
@@ -386,13 +420,9 @@ export const importLeads = async (req: Request, res: Response, next: NextFunctio
             const raw = row[0];
             if (!raw) continue;
             if (i === 0 && isNaN(Number(String(raw).replace(/[\s\-\(\)\.+]/g, '')))) continue;
-
             const normalized = normalizePhone(raw);
-            if (normalized) {
-                phones.push(normalized);
-            } else {
-                invalid.push(String(raw));
-            }
+            if (normalized) phones.push(normalized);
+            else invalid.push(String(raw));
         }
 
         if (phones.length === 0) {
@@ -424,8 +454,7 @@ export const importLeads = async (req: Request, res: Response, next: NextFunctio
                     unnest($8::uuid[]) as created_by
             ),
             filtered_data AS (
-                SELECT id.*
-                FROM input_data id
+                SELECT id.* FROM input_data id
                 LEFT JOIN leads l ON l.phone = id.phone
                 WHERE l.phone IS NULL
             )
@@ -433,8 +462,7 @@ export const importLeads = async (req: Request, res: Response, next: NextFunctio
                 company_name, legal_form, ico, contact_person, phone, email,
                 status, invoice_promised, assigned_to, created_by, created_at, updated_at
             )
-            SELECT
-                company_name, legal_form, ico, contact_person, phone, email,
+            SELECT company_name, legal_form, ico, contact_person, phone, email,
                 'NOVY'::lead_status, false, assigned_to, created_by, NOW(), NOW()
             FROM filtered_data
             RETURNING phone`,
@@ -446,12 +474,7 @@ export const importLeads = async (req: Request, res: Response, next: NextFunctio
 
         res.status(200).json({
             success: true,
-            summary: {
-                total: phones.length,
-                inserted,
-                duplicates,
-                invalid: invalid.length,
-            },
+            summary: { total: phones.length, inserted, duplicates, invalid: invalid.length },
             invalidNumbers: invalid.slice(0, 50),
         });
     } catch (error) {
@@ -466,11 +489,7 @@ export const blacklistLead = async (req: Request, res: Response, next: NextFunct
     try {
         const { id } = req.params;
 
-        const leadResult = await pool.query(
-            `SELECT id, phone, status FROM leads WHERE id = $1`,
-            [id]
-        );
-
+        const leadResult = await pool.query(`SELECT id, phone, status FROM leads WHERE id = $1`, [id]);
         if (leadResult.rows.length === 0) {
             res.status(404).json({ error: { message: 'Lead nenalezen', statusCode: 404 } });
             return;
@@ -479,10 +498,7 @@ export const blacklistLead = async (req: Request, res: Response, next: NextFunct
         const lead = leadResult.rows[0];
         const oldStatus = lead.status;
 
-        await pool.query(
-            `UPDATE leads SET status = 'NEKONTAKTOVAT', updated_at = NOW() WHERE id = $1`,
-            [id]
-        );
+        await pool.query(`UPDATE leads SET status = 'NEKONTAKTOVAT', updated_at = NOW() WHERE id = $1`, [id]);
 
         await pool.query(
             `INSERT INTO lead_comments (lead_id, user_id, old_status, new_status, comment)
@@ -490,10 +506,7 @@ export const blacklistLead = async (req: Request, res: Response, next: NextFunct
             [id, req.user?.id || DEFAULT_AI_AGENT_ID, oldStatus]
         );
 
-        res.status(200).json({
-            message: 'Lead přidán na blacklist',
-            phone: lead.phone,
-        });
+        res.status(200).json({ message: 'Lead přidán na blacklist', phone: lead.phone });
     } catch (error) {
         next(error);
     }
