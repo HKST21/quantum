@@ -3,18 +3,10 @@ import { twilioService } from './twilioService';
 import { callHandler } from '../websockets/callHandler';
 import { AICallOutcome, ConversationOutcome } from '../types/aiCalls.types';
 
-
 export class CallOrchestrator {
 
-    constructor() {
-        // Carrier validation not needed - leads are pre-filtered
-    }
-
-    async getLeadsForCalling(limit: number = 50): Promise<any[]> {
+    async getLeadsForCalling(agentUserId: string, limit: number = 50): Promise<any[]> {
         try {
-            const aiAgentId = process.env.AI_AGENT_USER_ID;
-            if (!aiAgentId) throw new Error('AI_AGENT_USER_ID not configured');
-
             const result = await pool.query(
                 `SELECT id, company_name, contact_person, phone, email
                  FROM leads
@@ -23,10 +15,10 @@ export class CallOrchestrator {
                  AND (ai_call_status IS NULL OR ai_call_status = 'failed')
                  ORDER BY created_at ASC
                  LIMIT $2`,
-                [aiAgentId, limit]
+                [agentUserId, limit]
             );
 
-            console.log(`✅ Found ${result.rows.length} leads ready for calling`);
+            console.log(`✅ Found ${result.rows.length} leads ready for calling (agent: ${agentUserId})`);
             return result.rows;
         } catch (error) {
             console.error('❌ Failed to fetch leads for calling:', error);
@@ -34,11 +26,11 @@ export class CallOrchestrator {
         }
     }
 
-    async processLead(leadId: string): Promise<void> {
+    async processLead(leadId: string, agentUserId: string): Promise<void> {
         let callSid: string | null = null;
 
         try {
-            console.log('🎯 Processing lead:', leadId);
+            console.log(`🎯 Processing lead: ${leadId} (agent: ${agentUserId})`);
 
             const leadResult = await pool.query(
                 `SELECT id, company_name, contact_person, phone, email FROM leads WHERE id = $1`,
@@ -64,10 +56,15 @@ export class CallOrchestrator {
 
             console.log('✅ Twilio call initiated:', callSid);
 
+            // Ulož agentUserId do call logu pro správný prompt výběr
             await pool.query(
-                `INSERT INTO ai_call_logs (lead_id, call_sid, status, started_at) VALUES ($1, $2, 'calling', NOW())`,
+                `INSERT INTO ai_call_logs (lead_id, call_sid, status, started_at)
+                 VALUES ($1, $2, 'calling', NOW())`,
                 [leadId, callSid]
             );
+
+            // Předej agentUserId do callHandleru přes metadata
+            callHandler.setAgentForCall(callSid, agentUserId);
 
             const maxWaitTime = 90000;
             const pollInterval = 2000;
@@ -80,7 +77,7 @@ export class CallOrchestrator {
                 const callData = callHandler.getCallData(callSid);
                 if (callData && callData.outcome) {
                     console.log('✅ Call completed with outcome:', callData.outcome);
-                    await this.updateLeadAfterCall(leadId, callSid, callData.outcome, callData.transcript, elapsed / 1000);
+                    await this.updateLeadAfterCall(leadId, callSid, callData.outcome, callData.transcript, elapsed / 1000, agentUserId);
                     return;
                 }
 
@@ -92,7 +89,8 @@ export class CallOrchestrator {
                         leadId, callSid,
                         { outcome: 'no_answer', transcript: '', aiNotes: `Call ended: ${twilioStatus.status}`, duration: 0, confidence: 1.0 },
                         `Call ended: ${twilioStatus.status}`,
-                        twilioStatus.duration || elapsed / 1000
+                        twilioStatus.duration || elapsed / 1000,
+                        agentUserId
                     );
                     return;
                 }
@@ -104,7 +102,8 @@ export class CallOrchestrator {
                 leadId, callSid,
                 { outcome: 'no_answer', transcript: '', aiNotes: 'Call timeout (90s)', duration: 90, confidence: 1.0 },
                 'Call timeout',
-                maxWaitTime / 1000
+                maxWaitTime / 1000,
+                agentUserId
             );
         } catch (error: any) {
             console.error('❌ Call processing failed:', error);
@@ -130,7 +129,8 @@ export class CallOrchestrator {
         callSid: string,
         outcome: ConversationOutcome,
         transcript: string,
-        duration: number
+        duration: number,
+        agentUserId: string
     ): Promise<void> {
         const statusMap: Record<string, string> = {
             interested: 'CHCE_KONTAKT_AI',
@@ -154,7 +154,6 @@ export class CallOrchestrator {
 
         const newStatus = statusMap[outcome.outcome];
         const callOutcome = outcomeMap[outcome.outcome];
-        const aiAgentId = process.env.AI_AGENT_USER_ID;
 
         await pool.query(
             `UPDATE leads SET status = $1, ai_call_status = 'completed', updated_at = NOW() WHERE id = $2`,
@@ -171,7 +170,7 @@ export class CallOrchestrator {
         await pool.query(
             `INSERT INTO lead_comments (lead_id, user_id, old_status, new_status, comment)
              VALUES ($1, $2, 'NOVY', $3, $4)`,
-            [leadId, aiAgentId, newStatus, `🤖 AI hovor dokončen\nVýsledek: ${callOutcome}\nDélka: ${Math.round(duration)}s\n${outcome.aiNotes}`]
+            [leadId, agentUserId, newStatus, `🤖 AI hovor dokončen\nVýsledek: ${callOutcome}\nDélka: ${Math.round(duration)}s\n${outcome.aiNotes}`]
         );
 
         console.log('✅ Lead updated after call:', { leadId, newStatus, outcome: callOutcome });

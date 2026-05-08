@@ -8,14 +8,25 @@ import {
     AICallStatusResponse, AICallLog, AICallLogsQuery, AICallLogsResponse,
 } from '../types/aiCalls.types';
 
+const DEFAULT_AI_AGENT_ID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
+
 export const startAICalling = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        const { leadIds, maxCalls = 50 } = req.body as StartAICallingRequest;
+        const { leadIds, maxCalls = 50, agentUserId } = req.body as StartAICallingRequest & { agentUserId?: string };
 
-        console.log('🚀 AI Calling start requested by:', req.user?.fullName);
+        // Použij agentUserId z requestu nebo default z env
+        const activeAgentId = agentUserId || process.env.AI_AGENT_USER_ID || DEFAULT_AI_AGENT_ID;
 
-        const aiAgentId = process.env.AI_AGENT_USER_ID;
-        if (!aiAgentId) throw new BadRequestError('AI Agent user not configured');
+        console.log(`🚀 AI Calling start requested by: ${req.user?.fullName} | Agent: ${activeAgentId}`);
+
+        // Ověř že agent existuje
+        const agentCheck = await pool.query(
+            `SELECT id, full_name FROM users WHERE id = $1 AND is_active = true`,
+            [activeAgentId]
+        );
+        if (agentCheck.rows.length === 0) throw new BadRequestError(`Agent ${activeAgentId} nenalezen nebo není aktivní`);
+
+        console.log(`🤖 Using agent: ${agentCheck.rows[0].full_name}`);
 
         let leads;
 
@@ -24,14 +35,14 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
                 `SELECT id, company_name, contact_person, phone
                  FROM leads
                  WHERE id = ANY($1) AND status = 'NOVY' AND assigned_to = $2`,
-                [leadIds, aiAgentId]
+                [leadIds, activeAgentId]
             );
             leads = result.rows;
         } else {
-            leads = await callOrchestrator.getLeadsForCalling(maxCalls);
+            leads = await callOrchestrator.getLeadsForCalling(activeAgentId, maxCalls);
         }
 
-        if (leads.length === 0) throw new BadRequestError('No leads available for calling');
+        if (leads.length === 0) throw new BadRequestError('Žádné leady k volání');
 
         console.log(`✅ Found ${leads.length} leads to call`);
 
@@ -40,7 +51,7 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
             for (const lead of leads) {
                 try {
                     console.log(`📞 Calling lead ${lead.id} (${lead.phone})...`);
-                    await callOrchestrator.processLead(lead.id);
+                    await callOrchestrator.processLead(lead.id, activeAgentId);
                     console.log(`✅ Call completed for ${lead.id}`);
                 } catch (error) {
                     console.error(`❌ Call failed for ${lead.id}:`, error);
@@ -53,8 +64,9 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
             success: true,
             message: `AI calling started for ${leads.length} leads`,
             queuedLeads: leads.length,
-            aiAgentId,
-        } as StartAICallingResponse);
+            aiAgentId: activeAgentId,
+            agentName: agentCheck.rows[0].full_name,
+        } as StartAICallingResponse & { agentName: string });
     } catch (error) {
         next(error);
     }
@@ -90,7 +102,7 @@ export const getAICallStatus = async (_req: Request, res: Response, next: NextFu
 
         const queueResult = await pool.query(
             `SELECT COUNT(*) as count FROM leads WHERE status = 'NOVY' AND assigned_to = $1`,
-            [process.env.AI_AGENT_USER_ID]
+            [process.env.AI_AGENT_USER_ID || DEFAULT_AI_AGENT_ID]
         );
 
         const todayResult = await pool.query(

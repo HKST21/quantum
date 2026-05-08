@@ -7,6 +7,7 @@ interface ActiveCall {
     streamSid: string | null;
     callSid: string;
     leadId: string;
+    agentUserId: string;
     transcript: string[];
     outcome: any | null;
     monitoringActive: boolean;
@@ -17,6 +18,13 @@ interface ActiveCall {
 
 export class CallHandler {
     private activeCalls: Map<string, ActiveCall> = new Map();
+    private agentMap: Map<string, string> = new Map(); // callSid → agentUserId
+
+    // Nastaví agenta pro hovor před WebSocket připojením
+    setAgentForCall(callSid: string, agentUserId: string): void {
+        this.agentMap.set(callSid, agentUserId);
+        console.log(`🤖 Agent set for call ${callSid}: ${agentUserId}`);
+    }
 
     async handleConnection(
         twilioWs: WebSocket,
@@ -27,19 +35,25 @@ export class CallHandler {
     ): Promise<void> {
         console.log('📞 New call WebSocket connection:', { callSid, leadId });
 
+        // Získej agentUserId z mapy nebo použij default
+        const agentUserId = this.agentMap.get(callSid) || process.env.AI_AGENT_USER_ID || '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
+        this.agentMap.delete(callSid); // Vyčisti po použití
+
+        console.log(`🤖 Using agent: ${agentUserId} for call: ${callSid}`);
+
         try {
-            await openAIService.createSession(leadData);
+            await openAIService.createSession(leadData, agentUserId);
             const openaiWs = openAIService.getWebSocket();
 
             if (!openaiWs) throw new Error('Failed to create OpenAI session');
 
             this.activeCalls.set(callSid, {
-                twilioWs, openaiWs, streamSid, callSid, leadId,
+                twilioWs, openaiWs, streamSid, callSid, leadId, agentUserId,
                 transcript: [], outcome: null, monitoringActive: false,
             });
 
             const forceEndTimeout = setTimeout(() => {
-                console.warn('⏰ MAX CALL DURATION (120s) - Force ending');
+                console.warn('⬰ MAX CALL DURATION (120s) - Force ending');
                 this.cleanupCall(callSid);
             }, 120000);
 
@@ -111,7 +125,7 @@ export class CallHandler {
                         break;
 
                     case 'response.output_audio.done':
-                        console.log('🔊 AI finished speaking');
+                        console.log('📊 AI finished speaking');
                         if (call.monitoringActive) {
                             if (call.fallbackTimeout) { clearTimeout(call.fallbackTimeout); call.fallbackTimeout = undefined; }
                             call.gracefulTimeout = setTimeout(() => {
@@ -131,7 +145,7 @@ export class CallHandler {
 
                     case 'conversation.item.input_audio_transcription.completed':
                         if (data.transcript) {
-                            console.log('👤 User said:', data.transcript);
+                            console.log('💤 User said:', data.transcript);
                             call.transcript.push(`User: ${data.transcript}`);
                         }
                         break;
@@ -151,7 +165,7 @@ export class CallHandler {
 
                             call.fallbackTimeout = setTimeout(() => {
                                 if (this.activeCalls.has(callSid)) {
-                                    console.log('⏰ Fallback timeout - force ending');
+                                    console.log('⬰ Fallback timeout - force ending');
                                     this.cleanupCall(callSid);
                                 }
                             }, 10000);

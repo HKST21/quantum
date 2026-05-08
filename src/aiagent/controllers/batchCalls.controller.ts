@@ -2,12 +2,13 @@ import { Request, Response, NextFunction } from 'express';
 import pool from '../../db/pool';
 import bcrypt from 'bcrypt';
 
-const AI_AGENT_ID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
+const DEFAULT_AI_AGENT_ID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
+
+const getAgentId = (req: Request): string =>
+    (req.query.agentUserId as string) || DEFAULT_AI_AGENT_ID;
 
 // ============================================
 // POST /api/ai-calls/verify-password
-// Ověří heslo admina pro re-auth před spuštěním volání
-// Nevyžaduje 2FA — jen kontrola hesla
 // ============================================
 export const verifyPassword = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -18,7 +19,6 @@ export const verifyPassword = async (req: Request, res: Response, next: NextFunc
             return;
         }
 
-        // Načti hash hesla aktuálně přihlášeného uživatele
         const result = await pool.query(
             `SELECT password_hash FROM users WHERE id = $1 AND is_active = true`,
             [req.user!.id]
@@ -43,22 +43,21 @@ export const verifyPassword = async (req: Request, res: Response, next: NextFunc
 };
 
 // ============================================
-// GET /api/ai-calls/batch-status
-// Progress aktuální dávky + live volané číslo
+// GET /api/ai-calls/batch-status?agentUserId=
 // ============================================
-export const getBatchStatus = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const getBatchStatus = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        // Aktuálně volaný lead
+        const agentId = getAgentId(req);
+
         const currentResult = await pool.query(
             `SELECT l.phone, l.company_name
              FROM leads l
              WHERE l.ai_call_status = 'calling'
              AND l.assigned_to = $1
              LIMIT 1`,
-            [AI_AGENT_ID]
+            [agentId]
         );
 
-        // Statistiky dnešního dne
         const statsResult = await pool.query(
             `SELECT
                 COUNT(*) FILTER (WHERE acl.status = 'completed') AS completed,
@@ -68,17 +67,19 @@ export const getBatchStatus = async (_req: Request, res: Response, next: NextFun
                 COUNT(*) FILTER (WHERE acl.outcome = 'ODKLADA') AS callback,
                 ROUND(AVG(acl.duration) FILTER (WHERE acl.duration IS NOT NULL AND acl.duration > 0)) AS avg_duration
              FROM ai_call_logs acl
-             WHERE DATE(acl.created_at AT TIME ZONE 'Europe/Prague') = CURRENT_DATE`,
+             JOIN leads l ON acl.lead_id = l.id
+             WHERE DATE(acl.created_at AT TIME ZONE 'Europe/Prague') = CURRENT_DATE
+             AND l.assigned_to = $1`,
+            [agentId]
         );
 
-        // Počet NOVY leadů čekajících ve frontě
         const queueResult = await pool.query(
             `SELECT COUNT(*) AS queue_size
              FROM leads
              WHERE status = 'NOVY'
              AND assigned_to = $1
              AND (ai_call_status IS NULL OR ai_call_status = 'failed')`,
-            [AI_AGENT_ID]
+            [agentId]
         );
 
         const isRunning = currentResult.rows.length > 0;
@@ -111,11 +112,11 @@ export const getBatchStatus = async (_req: Request, res: Response, next: NextFun
 
 // ============================================
 // GET /api/ai-calls/batch-results?date=YYYY-MM-DD
-// Výsledky dávky pro daný den — CHCE_KONTAKT_AI leady
 // ============================================
 export const getBatchResults = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         const date = req.query.date as string || new Date().toISOString().split('T')[0];
+        const agentId = getAgentId(req);
 
         const result = await pool.query(
             `SELECT
@@ -131,8 +132,9 @@ export const getBatchResults = async (req: Request, res: Response, next: NextFun
              JOIN leads l ON acl.lead_id = l.id
              WHERE acl.outcome = 'CHCE_KONTAKT_AI'
              AND DATE(acl.created_at AT TIME ZONE 'Europe/Prague') = $1
+             AND l.assigned_to = $2
              ORDER BY acl.created_at DESC`,
-            [date]
+            [date, agentId]
         );
 
         res.status(200).json({
@@ -146,11 +148,12 @@ export const getBatchResults = async (req: Request, res: Response, next: NextFun
 };
 
 // ============================================
-// GET /api/ai-calls/batch-history
-// Seznam dní se statistikami — posledních 30 dní
+// GET /api/ai-calls/batch-history?agentUserId=
 // ============================================
-export const getBatchHistory = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const getBatchHistory = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
+        const agentId = getAgentId(req);
+
         const result = await pool.query(
             `SELECT
                 DATE(acl.created_at AT TIME ZONE 'Europe/Prague')               AS datum,
@@ -166,9 +169,12 @@ export const getBatchHistory = async (_req: Request, res: Response, next: NextFu
                     NULLIF(COUNT(*) FILTER (WHERE acl.status = 'completed'), 0) * 100
                 )                                                                AS conversion_rate
              FROM ai_call_logs acl
+             JOIN leads l ON acl.lead_id = l.id
              WHERE acl.created_at >= NOW() - INTERVAL '30 days'
+             AND l.assigned_to = $1
              GROUP BY DATE(acl.created_at AT TIME ZONE 'Europe/Prague')
-             ORDER BY datum DESC`
+             ORDER BY datum DESC`,
+            [agentId]
         );
 
         res.status(200).json({
@@ -191,7 +197,6 @@ export const getBatchHistory = async (_req: Request, res: Response, next: NextFu
 
 // ============================================
 // GET /api/ai-calls/twilio-number
-// Vrátí telefonní číslo Evy z env
 // ============================================
 export const getTwilioNumber = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -203,11 +208,12 @@ export const getTwilioNumber = async (_req: Request, res: Response, next: NextFu
 };
 
 // ============================================
-// GET /api/ai-calls/unanswered
-// Bulletproof select — reálně nedovolané (bez nahrávky, max 3 pokusy)
+// GET /api/ai-calls/unanswered?agentUserId=
 // ============================================
-export const getUnanswered = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const getUnanswered = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
+        const agentId = getAgentId(req);
+
         const result = await pool.query(
             `SELECT
                 l.id,
@@ -230,7 +236,7 @@ export const getUnanswered = async (_req: Request, res: Response, next: NextFunc
                 ) = 0
                 AND COUNT(acl.id) < 3
              ORDER BY l.updated_at DESC`,
-            [AI_AGENT_ID]
+            [agentId]
         );
 
         res.status(200).json({
@@ -251,11 +257,11 @@ export const getUnanswered = async (_req: Request, res: Response, next: NextFunc
 
 // ============================================
 // POST /api/ai-calls/retry-unanswered
-// Reset nedovolaných na NOVY — ochrana max 3 pokusy přes ai_call_logs
 // ============================================
-export const retryUnanswered = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const retryUnanswered = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        // Nejdřív ověříme kolik jich je eligible (bulletproof podmínka + max 3 pokusy)
+        const agentId = (req.body.agentUserId as string) || DEFAULT_AI_AGENT_ID;
+
         const eligibleResult = await pool.query(
             `SELECT l.id
              FROM leads l
@@ -269,7 +275,7 @@ export const retryUnanswered = async (_req: Request, res: Response, next: NextFu
                     WHERE acl.recording_url IS NOT NULL AND acl.recording_url != ''
                 ) = 0
                 AND COUNT(acl.id) < 3`,
-            [AI_AGENT_ID]
+            [agentId]
         );
 
         const eligibleIds = eligibleResult.rows.map(r => r.id);
@@ -279,7 +285,6 @@ export const retryUnanswered = async (_req: Request, res: Response, next: NextFu
             return;
         }
 
-        // UPDATE — zachovává původní SQL, ai_call_attempts resetujeme (ochrana je přes ai_call_logs)
         const updateResult = await pool.query(
             `UPDATE leads
              SET
@@ -302,49 +307,7 @@ export const retryUnanswered = async (_req: Request, res: Response, next: NextFu
 };
 
 // ============================================
-// PATCH /api/leads/:id/blacklist
-// Nastaví lead na NEKONTAKTOVAT
-// ============================================
-export const blacklistLead = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-        const { id } = req.params;
-
-        const leadResult = await pool.query(
-            `SELECT id, phone, status FROM leads WHERE id = $1`,
-            [id]
-        );
-
-        if (leadResult.rows.length === 0) {
-            res.status(404).json({ error: { message: 'Lead nenalezen', statusCode: 404 } });
-            return;
-        }
-
-        const lead = leadResult.rows[0];
-        const oldStatus = lead.status;
-
-        await pool.query(
-            `UPDATE leads SET status = 'NEKONTAKTOVAT', updated_at = NOW() WHERE id = $1`,
-            [id]
-        );
-
-        await pool.query(
-            `INSERT INTO lead_comments (lead_id, user_id, old_status, new_status, comment)
-             VALUES ($1, $2, $3, 'NEKONTAKTOVAT', '🚫 Přidáno na blacklist přes CRM')`,
-            [id, req.user?.id || AI_AGENT_ID, oldStatus]
-        );
-
-        res.status(200).json({
-            message: 'Lead přidán na blacklist',
-            phone: lead.phone,
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-// ============================================
 // GET /api/ai-calls/avg-duration
-// Průměrná délka hovoru z posledních 100 hovorů pro odhad času dávky
 // ============================================
 export const getAvgDuration = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -363,9 +326,9 @@ export const getAvgDuration = async (_req: Request, res: Response, next: NextFun
              ) recent`
         );
 
-        const avgDuration = parseInt(result.rows[0].avg_duration || 30); // fallback 30s
+        const avgDuration = parseInt(result.rows[0].avg_duration || 30);
         const sampleSize = parseInt(result.rows[0].sample_size || 0);
-        const overhead = 8; // Twilio setup overhead v sekundách
+        const overhead = 8;
 
         res.status(200).json({
             avgDuration,
@@ -380,9 +343,6 @@ export const getAvgDuration = async (_req: Request, res: Response, next: NextFun
 
 // ============================================
 // POST /api/ai-calls/import-leads
-// Import telefonních čísel z XLSX — první sloupec
-// Normalizace: 605524894 → +420605524894
-// Deduplication přes phone
 // ============================================
 export const importLeads = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -390,6 +350,8 @@ export const importLeads = async (req: Request, res: Response, next: NextFunctio
             res.status(400).json({ error: { message: 'Soubor nebyl nahrán', statusCode: 400 } });
             return;
         }
+
+        const agentId = (req.body.agentUserId as string) || DEFAULT_AI_AGENT_ID;
 
         const XLSX = require('xlsx');
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
@@ -406,34 +368,23 @@ export const importLeads = async (req: Request, res: Response, next: NextFunctio
             return;
         }
 
-        // Normalizace čísla na +420XXXXXXXXX
         const normalizePhone = (raw: any): string | null => {
             const str = String(raw).replace(/[\s\-\(\)\.]/g, '').trim();
             if (!str) return null;
-
-            // Už má +420
             if (/^\+420\d{9}$/.test(str)) return str;
-            // Má 00420
             if (/^00420\d{9}$/.test(str)) return `+${str.slice(2)}`;
-            // Má 420 bez +
             if (/^420\d{9}$/.test(str)) return `+${str}`;
-            // Samo 9místné číslo
             if (/^\d{9}$/.test(str)) return `+420${str}`;
-
             return null;
         };
 
         const phones: string[] = [];
         const invalid: string[] = [];
 
-        // Procházíme všechny řádky — bereme první sloupec
-        // Přeskočíme header pokud je textový
         for (let i = 0; i < rawData.length; i++) {
             const row = rawData[i];
             const raw = row[0];
             if (!raw) continue;
-
-            // Přeskoč header řádek pokud obsahuje text
             if (i === 0 && isNaN(Number(String(raw).replace(/[\s\-\(\)\.+]/g, '')))) continue;
 
             const normalized = normalizePhone(raw);
@@ -452,14 +403,13 @@ export const importLeads = async (req: Request, res: Response, next: NextFunctio
             return;
         }
 
-        // Bulk insert s deduplication přes phone
         const companyNames = phones.map(() => '');
         const legalForms = phones.map(() => '');
         const icos = phones.map(() => '');
         const contactPersons = phones.map(() => '');
         const emails = phones.map(() => '');
-        const assignedTos = phones.map(() => AI_AGENT_ID);
-        const createdBys = phones.map(() => AI_AGENT_ID);
+        const assignedTos = phones.map(() => agentId);
+        const createdBys = phones.map(() => agentId);
 
         const insertResult = await pool.query(
             `WITH input_data AS (
@@ -503,6 +453,46 @@ export const importLeads = async (req: Request, res: Response, next: NextFunctio
                 invalid: invalid.length,
             },
             invalidNumbers: invalid.slice(0, 50),
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// PATCH /api/ai-calls/leads/:id/blacklist
+// ============================================
+export const blacklistLead = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { id } = req.params;
+
+        const leadResult = await pool.query(
+            `SELECT id, phone, status FROM leads WHERE id = $1`,
+            [id]
+        );
+
+        if (leadResult.rows.length === 0) {
+            res.status(404).json({ error: { message: 'Lead nenalezen', statusCode: 404 } });
+            return;
+        }
+
+        const lead = leadResult.rows[0];
+        const oldStatus = lead.status;
+
+        await pool.query(
+            `UPDATE leads SET status = 'NEKONTAKTOVAT', updated_at = NOW() WHERE id = $1`,
+            [id]
+        );
+
+        await pool.query(
+            `INSERT INTO lead_comments (lead_id, user_id, old_status, new_status, comment)
+             VALUES ($1, $2, $3, 'NEKONTAKTOVAT', '🚫 Přidáno na blacklist přes CRM')`,
+            [id, req.user?.id || DEFAULT_AI_AGENT_ID, oldStatus]
+        );
+
+        res.status(200).json({
+            message: 'Lead přidán na blacklist',
+            phone: lead.phone,
         });
     } catch (error) {
         next(error);

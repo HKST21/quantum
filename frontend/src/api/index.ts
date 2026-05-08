@@ -127,32 +127,50 @@ export interface AvgDuration {
     sampleSize: number;
 }
 
-export const getBatchStatus = (): Promise<BatchStatus> =>
-    fetchJson('/ai-calls/batch-status');
+export interface Agent {
+    id: string;
+    fullName: string;
+    email: string;
+}
+
+export const getBatchStatus = (agentUserId?: string): Promise<BatchStatus> => {
+    const query = agentUserId ? `?agentUserId=${agentUserId}` : '';
+    return fetchJson(`/ai-calls/batch-status${query}`);
+};
 
 export const getBatchResults = (date: string): Promise<{ date: string; leads: BatchResultLead[]; total: number }> =>
     fetchJson(`/ai-calls/batch-results?date=${date}`);
 
-export const getBatchHistory = (): Promise<{ batches: BatchHistoryItem[] }> =>
-    fetchJson('/ai-calls/batch-history');
+export const getBatchHistory = (agentUserId?: string): Promise<{ batches: BatchHistoryItem[] }> => {
+    const query = agentUserId ? `?agentUserId=${agentUserId}` : '';
+    return fetchJson(`/ai-calls/batch-history${query}`);
+};
 
 export const getTwilioNumber = (): Promise<{ phone: string }> =>
     fetchJson('/ai-calls/twilio-number');
 
-export const getUnanswered = (): Promise<{ leads: UnansweredLead[]; total: number }> =>
-    fetchJson('/ai-calls/unanswered');
+export const getUnanswered = (agentUserId?: string): Promise<{ leads: UnansweredLead[]; total: number }> => {
+    const query = agentUserId ? `?agentUserId=${agentUserId}` : '';
+    return fetchJson(`/ai-calls/unanswered${query}`);
+};
 
-export const retryUnanswered = (): Promise<{ updated: number; message: string }> =>
-    fetchJson('/ai-calls/retry-unanswered', { method: 'POST' });
+export const retryUnanswered = (agentUserId?: string): Promise<{ updated: number; message: string }> =>
+    fetchJson('/ai-calls/retry-unanswered', {
+        method: 'POST',
+        body: JSON.stringify({ agentUserId }),
+    });
 
 export const getAvgDuration = (): Promise<AvgDuration> =>
     fetchJson('/ai-calls/avg-duration');
 
-export const startAICalling = (maxCalls: number): Promise<any> =>
+export const startAICalling = (maxCalls: number, agentUserId: string): Promise<any> =>
     fetchJson('/ai-calls/start', {
         method: 'POST',
-        body: JSON.stringify({ maxCalls }),
+        body: JSON.stringify({ maxCalls, agentUserId }),
     });
+
+export const getAgents = (): Promise<{ users: Agent[] }> =>
+    fetchJson('/users');
 
 // ============================================
 // USERS

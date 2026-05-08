@@ -6,8 +6,22 @@ import {
 
 type CallingStep = 'setup' | 'reauth' | 'calling' | 'done';
 
+interface AgentOption {
+    id: string;
+    name: string;
+    description: string;
+}
+
+const AGENTS: AgentOption[] = [
+    { id: '53c65ca7-68bc-4948-83e5-35a64c17f0fb', name: 'Eva V1', description: 'VIP ceník do SMS' },
+    { id: 'aeec78ff-a86b-4cab-b33a-adeb7c94f08e', name: 'Eva V2', description: 'Šetříme klientům až 40%' },
+    { id: 'e7a469bb-4783-4f96-b961-03dd503e5bfa', name: 'Eva V3', description: 'Nepřeplácíte za služby?' },
+    { id: 'f4adb349-70c3-4e63-8670-81f6c177f61d', name: 'Eva V4', description: 'Nezávazné porovnání' },
+];
+
 const Calling: React.FC = () => {
     const [step, setStep] = useState<CallingStep>('setup');
+    const [selectedAgent, setSelectedAgent] = useState<AgentOption>(AGENTS[0]);
     const [maxCalls, setMaxCalls] = useState<number>(100);
     const [twilioNumber, setTwilioNumber] = useState<string>('');
     const [avgDuration, setAvgDuration] = useState<AvgDuration | null>(null);
@@ -22,34 +36,35 @@ const Calling: React.FC = () => {
 
     const pollRef = useRef<NodeJS.Timeout | null>(null);
 
-    useEffect(() => {
-        const loadMeta = async () => {
-            setLoadingMeta(true);
-            try {
-                const [numRes, durRes, statusRes] = await Promise.all([
-                    getTwilioNumber(),
-                    getAvgDuration(),
-                    getBatchStatus(),
-                ]);
-                setTwilioNumber(numRes.phone);
-                setAvgDuration(durRes);
-                setBatchStatus(statusRes);
-                setNovyCount(statusRes.queueSize);
-                setMaxCalls(Math.min(100, statusRes.queueSize));
-            } catch (err) {
-                console.error('Failed to load meta:', err);
-            } finally {
-                setLoadingMeta(false);
-            }
-        };
-        loadMeta();
+    const loadMeta = useCallback(async (agentId: string) => {
+        setLoadingMeta(true);
+        try {
+            const [numRes, durRes, statusRes] = await Promise.all([
+                getTwilioNumber(),
+                getAvgDuration(),
+                getBatchStatus(agentId),
+            ]);
+            setTwilioNumber(numRes.phone);
+            setAvgDuration(durRes);
+            setBatchStatus(statusRes);
+            setNovyCount(statusRes.queueSize);
+            setMaxCalls(Math.min(100, statusRes.queueSize));
+        } catch (err) {
+            console.error('Failed to load meta:', err);
+        } finally {
+            setLoadingMeta(false);
+        }
     }, []);
+
+    useEffect(() => {
+        loadMeta(selectedAgent.id);
+    }, [selectedAgent, loadMeta]);
 
     const startPolling = useCallback(() => {
         if (pollRef.current) clearInterval(pollRef.current);
         pollRef.current = setInterval(async () => {
             try {
-                const status = await getBatchStatus();
+                const status = await getBatchStatus(selectedAgent.id);
                 setBatchStatus(status);
                 if (!status.isRunning && step === 'calling') {
                     clearInterval(pollRef.current!);
@@ -59,7 +74,7 @@ const Calling: React.FC = () => {
                 console.error('Polling error:', err);
             }
         }, 3000);
-    }, [step]);
+    }, [step, selectedAgent.id]);
 
     useEffect(() => {
         if (step === 'calling') startPolling();
@@ -97,13 +112,17 @@ const Calling: React.FC = () => {
         setMaxCalls(capped);
     };
 
+    const handleAgentChange = (agentId: string) => {
+        const agent = AGENTS.find(a => a.id === agentId) || AGENTS[0];
+        setSelectedAgent(agent);
+    };
+
     const handleReauth = async (e: React.FormEvent) => {
         e.preventDefault();
         setReauthError('');
         setReauthLoading(true);
 
         try {
-            // Ověř heslo přes dedikovaný endpoint — bez 2FA požadavku
             const res = await fetch('/api/ai-calls/verify-password', {
                 method: 'POST',
                 credentials: 'include',
@@ -119,10 +138,9 @@ const Calling: React.FC = () => {
                 return;
             }
 
-            // Heslo OK — spusť volání
-            await startAICalling(maxCalls);
+            await startAICalling(maxCalls, selectedAgent.id);
 
-            const status = await getBatchStatus();
+            const status = await getBatchStatus(selectedAgent.id);
             setBatchStatus(status);
             setStartedAt(new Date());
             setStep('calling');
@@ -147,11 +165,7 @@ const Calling: React.FC = () => {
         setBatchStatus(null);
         setStartedAt(null);
         if (pollRef.current) clearInterval(pollRef.current);
-        getBatchStatus().then(s => {
-            setNovyCount(s.queueSize);
-            setMaxCalls(Math.min(100, s.queueSize));
-            setBatchStatus(s);
-        });
+        loadMeta(selectedAgent.id);
     };
 
     return (
@@ -159,7 +173,7 @@ const Calling: React.FC = () => {
             <div className="page-header">
                 <div>
                     <h1 className="page-title">AI Volání</h1>
-                    <p className="page-subtitle">Spuštění dávky hovorů přes agenta Evu</p>
+                    <p className="page-subtitle">Spuštění dávky hovorů přes AI agenta</p>
                 </div>
             </div>
 
@@ -174,8 +188,25 @@ const Calling: React.FC = () => {
                         </div>
                         <div className="card-body">
 
+                            {/* Výběr agenta */}
                             <div className="form-group">
-                                <label className="form-label">Volající číslo (Eva)</label>
+                                <label className="form-label">AI Agent</label>
+                                <select
+                                    className="form-select"
+                                    value={selectedAgent.id}
+                                    onChange={(e) => handleAgentChange(e.target.value)}
+                                >
+                                    {AGENTS.map(agent => (
+                                        <option key={agent.id} value={agent.id}>
+                                            {agent.name} — {agent.description}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {/* Telefonní číslo */}
+                            <div className="form-group">
+                                <label className="form-label">Volající číslo</label>
                                 <div style={{
                                     padding: '9px 12px',
                                     background: 'var(--gray-50)',
@@ -190,6 +221,7 @@ const Calling: React.FC = () => {
                                 </div>
                             </div>
 
+                            {/* Počet NOVY leadů */}
                             <div className="form-group">
                                 <label className="form-label">Dostupné leady ke kontaktování</label>
                                 {loadingMeta ? (
@@ -211,6 +243,7 @@ const Calling: React.FC = () => {
                                 )}
                             </div>
 
+                            {/* Počet hovorů */}
                             <div className="form-group">
                                 <label className="form-label">
                                     Počet hovorů v dávce
@@ -234,6 +267,7 @@ const Calling: React.FC = () => {
                                 )}
                             </div>
 
+                            {/* Odhad času */}
                             {avgDuration && novyCount > 0 && (
                                 <div className="alert alert-info">
                                     <div>
@@ -248,15 +282,9 @@ const Calling: React.FC = () => {
                                 </div>
                             )}
 
-                            {avgDuration?.sampleSize === 0 && (
-                                <div className="alert alert-warning">
-                                    ⚠️ Zatím žádná data o délce hovorů. Odhad bude dostupný po prvních hovorech.
-                                </div>
-                            )}
-
                             {novyCount === 0 && !loadingMeta && (
                                 <div className="alert alert-danger">
-                                    ❌ Žádné leady se statusem NOVY. Nejdřív importuj leady nebo zařaď nedovolané zpět do fronty.
+                                    ❌ Žádné leady se statusem NOVY pro tohoto agenta. Importuj leady nebo zařaď nedovolané zpět.
                                 </div>
                             )}
 
@@ -282,12 +310,13 @@ const Calling: React.FC = () => {
                         <div className="card-body">
                             <div className="alert alert-warning mb-16">
                                 <div>
-                                    Chystáš se spustit <strong>{maxCalls.toLocaleString('cs-CZ')} hovorů</strong> z čísla{' '}
-                                    <strong style={{ fontFamily: 'monospace' }}>{twilioNumber}</strong>.
+                                    Agent: <strong>{selectedAgent.name}</strong> — {selectedAgent.description}
                                     <br />
-                                    Odhadovaný čas: <strong>{estimateTime(maxCalls)}</strong>.
+                                    Počet hovorů: <strong>{maxCalls.toLocaleString('cs-CZ')}</strong>
                                     <br />
-                                    Dostupných leadů: <strong>{novyCount.toLocaleString('cs-CZ')}</strong>.
+                                    Volající číslo: <strong style={{ fontFamily: 'monospace' }}>{twilioNumber}</strong>
+                                    <br />
+                                    Odhadovaný čas: <strong>{estimateTime(maxCalls)}</strong>
                                     <br /><br />
                                     Pro potvrzení zadej své heslo.
                                 </div>
@@ -330,7 +359,7 @@ const Calling: React.FC = () => {
                                         {reauthLoading ? (
                                             <><span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Spouštím...</>
                                         ) : (
-                                            '🚀 Spustit volání'
+                                            `🚀 Spustit ${selectedAgent.name}`
                                         )}
                                     </button>
                                 </div>
@@ -343,6 +372,19 @@ const Calling: React.FC = () => {
             {/* ── KROK 3: PROBÍHÁ VOLÁNÍ ── */}
             {step === 'calling' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
+                    <div style={{
+                        background: 'var(--primary-light)',
+                        border: '1px solid #bfdbfe',
+                        borderRadius: 'var(--radius)',
+                        padding: '8px 14px',
+                        fontSize: 13,
+                        color: 'var(--primary)',
+                        fontWeight: 600,
+                        marginBottom: 12,
+                    }}>
+                        🤖 Agent: {selectedAgent.name} — {selectedAgent.description}
+                    </div>
+
                     <div className="live-feed mb-16">
                         <span className="live-dot" />
                         {batchStatus.isRunning && batchStatus.currentCall ? (
@@ -420,10 +462,10 @@ const Calling: React.FC = () => {
             {step === 'done' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div className="alert alert-success mb-24" style={{ fontSize: 16 }}>
-                        🎉 Dávka dokončena!
+                        🎉 Dávka dokončena! Agent: <strong>{selectedAgent.name}</strong>
                         {startedAt && (
                             <span style={{ marginLeft: 8, fontSize: 13, opacity: 0.8 }}>
-                Spuštěno: {startedAt.toLocaleTimeString('cs-CZ')}
+                · Spuštěno: {startedAt.toLocaleTimeString('cs-CZ')}
               </span>
                         )}
                     </div>
