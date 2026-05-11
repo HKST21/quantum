@@ -26,7 +26,7 @@ const AGENTS: AgentOption[] = [
         id: 'aeec78ff-a86b-4cab-b33a-adeb7c94f08e',
         name: 'Eva V2',
         description: 'Šetříme klientům až 40%',
-        pitch: 'T-Mobile partner u telefonu, šetříme svým klientům až 40%, máte zájem o dvouminutovou kontrolu ZDARMA od našeho specialisty?',
+        pitch: 'T-Mobile partner u telefonu, šetříme svým klientům až 40%, máte zájem o dvouminutovou kontrolu ZDARMA od našeho specialisty, který by Vás kontaktoval nezávazně?',
         successLine: 'Super, kolega se ozve, rychle s Vámi projde současné podmínky a zjistí, jak Vám zajistit výhodnější cenu. Hezký den!',
     },
     {
