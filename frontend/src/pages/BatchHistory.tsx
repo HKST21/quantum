@@ -7,6 +7,7 @@ const AGENT_COLORS: Record<string, string> = {
     'aeec78ff-a86b-4cab-b33a-adeb7c94f08e': '#7c3aed', // Eva V2 - fialová
     'e7a469bb-4783-4f96-b961-03dd503e5bfa': '#059669', // Eva V3 - zelená
     'f4adb349-70c3-4e63-8670-81f6c177f61d': '#d97706', // Eva V4 - oranžová
+    'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9': '#db2777', // Eva V5 - růžová
 };
 
 const BatchHistory: React.FC = () => {
@@ -58,7 +59,6 @@ const BatchHistory: React.FC = () => {
         return '❌';
     };
 
-    // Celkové součty
     const totals = batches.reduce(
         (acc, b) => ({
             celkemHovoru: acc.celkemHovoru + b.celkemHovoru,
@@ -83,7 +83,6 @@ const BatchHistory: React.FC = () => {
                 </div>
             </div>
 
-            {/* SOUHRN */}
             {!loading && batches.length > 0 && (
                 <div className="stats-grid mb-24">
                     <div className="stat-card">
@@ -103,12 +102,12 @@ const BatchHistory: React.FC = () => {
                     <div className="stat-card">
                         <div className="stat-label">Prům. konverze</div>
                         <div style={{ marginTop: 6 }}>
-              <span style={{
-                  ...getConversionStyle(totalConversion),
-                  padding: '4px 12px', borderRadius: 20, fontWeight: 700, fontSize: 22,
-              }}>
-                {totalConversion}% {getConversionLabel(totalConversion)}
-              </span>
+                            <span style={{
+                                ...getConversionStyle(totalConversion),
+                                padding: '4px 12px', borderRadius: 20, fontWeight: 700, fontSize: 22,
+                            }}>
+                                {totalConversion}% {getConversionLabel(totalConversion)}
+                            </span>
                         </div>
                     </div>
                     <div className="stat-card">
@@ -122,7 +121,6 @@ const BatchHistory: React.FC = () => {
                 </div>
             )}
 
-            {/* LEGENDA konverze */}
             {!loading && batches.length > 0 && (
                 <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
                     <span style={{ fontSize: 12, color: 'var(--gray-500)', marginRight: 4 }}>Konverze:</span>
@@ -137,13 +135,12 @@ const BatchHistory: React.FC = () => {
                             ...getConversionStyle(item.rate),
                             padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 600,
                         }}>
-              {item.label}
-            </span>
+                            {item.label}
+                        </span>
                     ))}
                 </div>
             )}
 
-            {/* TABULKA */}
             <div className="table-wrapper">
                 {loading ? (
                     <div className="loading-spinner"><span className="spinner" />Načítám historii...</div>
@@ -177,20 +174,20 @@ const BatchHistory: React.FC = () => {
                             >
                                 <td style={{ fontWeight: 600 }}>{formatDate(batch.datum)}</td>
                                 <td>
-                    <span style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 6,
-                        padding: '3px 10px',
-                        borderRadius: 20,
-                        fontSize: 12,
-                        fontWeight: 600,
-                        background: `${AGENT_COLORS[(batch as any).agentId] || '#6b7280'}18`,
-                        color: AGENT_COLORS[(batch as any).agentId] || '#6b7280',
-                        border: `1px solid ${AGENT_COLORS[(batch as any).agentId] || '#6b7280'}40`,
-                    }}>
-                      🤖 {(batch as any).agentName || 'Neznámý agent'}
-                    </span>
+                                        <span style={{
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: 6,
+                                            padding: '3px 10px',
+                                            borderRadius: 20,
+                                            fontSize: 12,
+                                            fontWeight: 600,
+                                            background: `${AGENT_COLORS[(batch as any).agentId] || '#6b7280'}18`,
+                                            color: AGENT_COLORS[(batch as any).agentId] || '#6b7280',
+                                            border: `1px solid ${AGENT_COLORS[(batch as any).agentId] || '#6b7280'}40`,
+                                        }}>
+                                            {(batch as any).agentId === 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9' ? '🧪' : '🤖'} {(batch as any).agentName || 'Neznámý agent'}
+                                        </span>
                                 </td>
                                 <td style={{ fontWeight: 600 }}>{batch.celkemHovoru.toLocaleString('cs-CZ')}</td>
                                 <td><span className="badge badge-success">{batch.interested}</span></td>
@@ -198,13 +195,13 @@ const BatchHistory: React.FC = () => {
                                 <td><span className="badge badge-danger">{batch.rejected}</span></td>
                                 <td><span className="badge badge-gray">{batch.callback}</span></td>
                                 <td>
-                    <span style={{
-                        ...getConversionStyle(batch.conversionRate),
-                        padding: '3px 10px', borderRadius: 20, fontSize: 12,
-                        fontWeight: 700, display: 'inline-block',
-                    }}>
-                      {batch.conversionRate}% {getConversionLabel(batch.conversionRate)}
-                    </span>
+                                        <span style={{
+                                            ...getConversionStyle(batch.conversionRate),
+                                            padding: '3px 10px', borderRadius: 20, fontSize: 12,
+                                            fontWeight: 700, display: 'inline-block',
+                                        }}>
+                                            {batch.conversionRate}% {getConversionLabel(batch.conversionRate)}
+                                        </span>
                                 </td>
                                 <td className="td-muted">{formatDuration(batch.avgDuration)}</td>
                                 <td>

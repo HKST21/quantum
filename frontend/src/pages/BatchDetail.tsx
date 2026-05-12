@@ -8,6 +8,7 @@ const AGENT_NAMES: Record<string, string> = {
     'aeec78ff-a86b-4cab-b33a-adeb7c94f08e': 'Eva V2',
     'e7a469bb-4783-4f96-b961-03dd503e5bfa': 'Eva V3',
     'f4adb349-70c3-4e63-8670-81f6c177f61d': 'Eva V4',
+    'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9': 'Eva V5',
 };
 
 const BatchDetail: React.FC = () => {
@@ -15,7 +16,6 @@ const BatchDetail: React.FC = () => {
     const navigate = useNavigate();
     const location = useLocation();
 
-    // Načti agentUserId z URL query parametru
     const agentUserId = new URLSearchParams(location.search).get('agentUserId') || '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
     const agentName = AGENT_NAMES[agentUserId] || 'Neznámý agent';
 
@@ -106,7 +106,6 @@ const BatchDetail: React.FC = () => {
                 </button>
             </div>
 
-            {/* STATISTIKY */}
             {!loading && leads.length > 0 && (
                 <div className="stats-grid mb-24">
                     <div className="stat-card">
@@ -133,7 +132,6 @@ const BatchDetail: React.FC = () => {
                 </div>
             )}
 
-            {/* TABULKA */}
             <div className="table-wrapper">
                 {loading ? (
                     <div className="loading-spinner">
@@ -207,8 +205,8 @@ const BatchDetail: React.FC = () => {
                                             }}
                                             title={lead.poznamka_evy}
                                         >
-                        {lead.poznamka_evy}
-                      </span>
+                                            {lead.poznamka_evy}
+                                        </span>
                                     ) : (
                                         <span className="td-muted">—</span>
                                     )}

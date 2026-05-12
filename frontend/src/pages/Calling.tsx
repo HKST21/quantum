@@ -19,29 +19,36 @@ const AGENTS: AgentOption[] = [
         id: '53c65ca7-68bc-4948-83e5-35a64c17f0fb',
         name: 'Eva V1',
         description: 'VIP ceník do SMS',
-        pitch: 'Volám z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP CENÍK?',
-        successLine: 'Skvěle! Kolega se ozve a připraví ceník přímo na míru do té SMS. Hezký den!',
+        pitch: 'Volám z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?',
+        successLine: 'Skvěle! Kolega se ozve v krátkém hovoru a připraví Vám ho na míru. Hezký den!',
     },
     {
         id: 'aeec78ff-a86b-4cab-b33a-adeb7c94f08e',
         name: 'Eva V2',
-        description: 'Šetříme klientům až 40%',
-        pitch: 'T-Mobile partner u telefonu, šetříme svým klientům až 40%, máte zájem o dvouminutovou kontrolu ZDARMA od našeho specialisty, který by Vás kontaktoval nezávazně?',
-        successLine: 'Super, kolega se ozve, rychle s Vámi projde současné podmínky a zjistí, jak Vám zajistit výhodnější cenu. Hezký den!',
+        description: 'Neveřejné slevy — kontrola zdarma',
+        pitch: 'T-Mobile partner s neveřejnými slevami u telefonu, můžu Vám domluvit krátkou, nezávaznou kontrolu zdarma od našeho specialisty?',
+        successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
     },
     {
         id: 'e7a469bb-4783-4f96-b961-03dd503e5bfa',
         name: 'Eva V3',
-        description: 'Nepřeplácíte za služby?',
-        pitch: 'T-Mobile partner u telefonu, volám abych zjistila, zda klienti nepřeplácí za služby u svého operátora, chcete domluvit dvouminutový kontakt s naším specialistou?',
-        successLine: 'Super, kolega se ozve, rychle s Vámi projde současné podmínky a zjistí, jak Vám zajistit výhodnější cenu. Hezký den!',
+        description: 'Neveřejné slevy — krátký hovor',
+        pitch: 'T-Mobile partner s neveřejnými slevami u telefonu, můžu Vám domluvit krátký nezávazný hovor s naším specialistou?',
+        successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
     },
     {
         id: 'f4adb349-70c3-4e63-8670-81f6c177f61d',
         name: 'Eva V4',
-        description: 'Nezávazné porovnání',
-        pitch: 'Volám za T-Mobile partner, je možné, že u operátora zbytečně přeplácíte. Může Vám kolega zdarma nechat udělat NEZÁVAZNÉ porovnání?',
-        successLine: 'Super, kolega se ozve, rychle s Vámi projde současné podmínky a zjistí, jak Vám zajistit výhodnější cenu. Hezký den!',
+        description: 'Šetříme 40% — krátký hovor',
+        pitch: 'T-Mobile partner u telefonu, šetřím svým klientům až 40% nákladů, můžu Vám domluvit krátký nezávazný hovor s naším specialistou?',
+        successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
+    },
+    {
+        id: 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9',
+        name: 'Eva V5',
+        description: 'Dvoustupňová kvalifikace (experiment)',
+        pitch: 'Volám z T-Mobile partner, platíte za svůj mobilní tarif s neomezenými daty víc jak 500Kč měsíčně? → [ANO] → Chcete, aby Vás nezávazně kontaktoval náš specialista s lepší cenou?',
+        successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
     },
 ];
 
@@ -58,7 +65,7 @@ const Calling: React.FC = () => {
     const [step, setStep] = useState<CallingStep>('setup');
     const [selectedAgent, setSelectedAgent] = useState<AgentOption>(AGENTS[0]);
     const [maxCalls, setMaxCalls] = useState<number>(100);
-    const [workers, setWorkers] = useState<number>(1);  // ← NOVÉ
+    const [workers, setWorkers] = useState<number>(1);
     const [twilioNumber, setTwilioNumber] = useState<string>('');
     const [avgDuration, setAvgDuration] = useState<AvgDuration | null>(null);
     const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
@@ -117,7 +124,6 @@ const Calling: React.FC = () => {
         return () => { if (pollRef.current) clearInterval(pollRef.current); };
     }, [step, startPolling]);
 
-    // ← UPRAVENO: odhad přepočítán per worker
     const estimateTime = (calls: number, workerCount: number = 1): string => {
         if (!avgDuration) return '—';
         const callsPerWorker = Math.ceil(calls / workerCount);
@@ -128,7 +134,6 @@ const Calling: React.FC = () => {
         return `~${minutes}min`;
     };
 
-    // ← UPRAVENO: zbývající čas per worker
     const remainingTime = (): string => {
         if (!batchStatus || !avgDuration) return '—';
         const callsPerWorker = Math.ceil(batchStatus.queueSize / workers);
@@ -178,7 +183,6 @@ const Calling: React.FC = () => {
                 return;
             }
 
-            // ← UPRAVENO: předáme workers
             await startAICalling(maxCalls, selectedAgent.id, workers);
             const status = await getBatchStatus(selectedAgent.id);
             setBatchStatus(status);
@@ -207,6 +211,8 @@ const Calling: React.FC = () => {
         if (pollRef.current) clearInterval(pollRef.current);
         loadMeta(selectedAgent.id);
     };
+
+    const isV5 = selectedAgent.id === 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9';
 
     return (
         <div>
@@ -246,18 +252,36 @@ const Calling: React.FC = () => {
 
                             {/* Pitch preview */}
                             <div style={{
-                                background: '#f8faff',
-                                border: '1px solid #c7d7f9',
+                                background: isV5 ? '#fffbeb' : '#f8faff',
+                                border: `1px solid ${isV5 ? '#fde68a' : '#c7d7f9'}`,
                                 borderRadius: 'var(--radius)',
                                 padding: '12px 14px',
                                 marginBottom: 16,
                             }}>
-                                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>
-                                    🎙 Pitch věta
+                                {isV5 && (
+                                    <div style={{ fontSize: 11, fontWeight: 600, color: '#d97706', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8 }}>
+                                        🧪 Experimentální — dvoustupňová kvalifikace
+                                    </div>
+                                )}
+                                <div style={{ fontSize: 11, fontWeight: 600, color: isV5 ? '#d97706' : 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>
+                                    🎙 {isV5 ? 'Otázka 1' : 'Pitch věta'}
                                 </div>
                                 <div style={{ fontSize: 13, color: 'var(--gray-800)', lineHeight: 1.6, fontStyle: 'italic' }}>
-                                    „{selectedAgent.pitch}"
+                                    {isV5
+                                        ? '„Volám z T-Mobile partner, platíte za svůj mobilní tarif s neomezenými daty víc jak 500Kč měsíčně?"'
+                                        : `„${selectedAgent.pitch}"`
+                                    }
                                 </div>
+                                {isV5 && (
+                                    <>
+                                        <div style={{ fontSize: 11, fontWeight: 600, color: '#d97706', textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: 10, marginBottom: 6 }}>
+                                            🎙 Otázka 2 (pouze pokud ANO)
+                                        </div>
+                                        <div style={{ fontSize: 13, color: 'var(--gray-800)', lineHeight: 1.6, fontStyle: 'italic' }}>
+                                            „Chcete, aby Vás nezávazně kontaktoval náš specialista s lepší cenou?"
+                                        </div>
+                                    </>
+                                )}
                                 <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--success)', textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: 10, marginBottom: 6 }}>
                                     ✅ Při souhlasu
                                 </div>
@@ -266,7 +290,7 @@ const Calling: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* ← NOVÉ: Výběr počtu workerů */}
+                            {/* Výběr počtu workerů */}
                             <div className="form-group">
                                 <label className="form-label">
                                     Počet workerů (paralelní volání)
@@ -361,7 +385,7 @@ const Calling: React.FC = () => {
                                 )}
                             </div>
 
-                            {/* ← UPRAVENO: Odhad času per worker */}
+                            {/* Odhad času */}
                             {avgDuration && novyCount > 0 && (
                                 <div className="alert alert-info">
                                     <div>
@@ -413,7 +437,6 @@ const Calling: React.FC = () => {
                                     <br />
                                     Počet hovorů: <strong>{maxCalls.toLocaleString('cs-CZ')}</strong>
                                     <br />
-                                    {/* ← UPRAVENO: workeři místo jednoho čísla */}
                                     Workeři: <strong>{workers}×</strong>
                                     {' '}
                                     <span style={{ fontFamily: 'monospace', fontSize: 12 }}>
@@ -463,7 +486,6 @@ const Calling: React.FC = () => {
                                         {reauthLoading ? (
                                             <><span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Spouštím...</>
                                         ) : (
-                                            // ← UPRAVENO: zobrazí počet workerů
                                             `🚀 Spustit ${selectedAgent.name} (${workers} worker${workers > 1 ? 'y' : ''})`
                                         )}
                                     </button>
@@ -478,17 +500,16 @@ const Calling: React.FC = () => {
             {step === 'calling' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div style={{
-                        background: 'var(--primary-light)',
-                        border: '1px solid #bfdbfe',
+                        background: isV5 ? '#fffbeb' : 'var(--primary-light)',
+                        border: `1px solid ${isV5 ? '#fde68a' : '#bfdbfe'}`,
                         borderRadius: 'var(--radius)',
                         padding: '8px 14px',
                         fontSize: 13,
-                        color: 'var(--primary)',
+                        color: isV5 ? '#d97706' : 'var(--primary)',
                         fontWeight: 600,
                         marginBottom: 12,
                     }}>
-                        {/* ← UPRAVENO: zobrazí počet workerů */}
-                        🤖 {selectedAgent.name} · {workers} worker{workers > 1 ? 'y' : ''} · „{selectedAgent.pitch.slice(0, 50)}..."
+                        {isV5 ? '🧪' : '🤖'} {selectedAgent.name} · {workers} worker{workers > 1 ? 'y' : ''} · {isV5 ? 'Dvoustupňová kvalifikace (experiment)' : `„${selectedAgent.pitch.slice(0, 50)}..."`}
                     </div>
 
                     <div className="live-feed mb-16">

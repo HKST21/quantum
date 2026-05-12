@@ -4,6 +4,7 @@ import { evaV1Prompt } from '../prompts/eva_v1';
 import { evaV2Prompt } from '../prompts/eva_v2';
 import { evaV3Prompt } from '../prompts/eva_v3';
 import { evaV4Prompt } from '../prompts/eva_v4';
+import { evaV5Prompt } from '../prompts/eva_v5';
 
 // Mapa agentů → prompty
 const AGENT_PROMPTS: Record<string, () => string> = {
@@ -11,6 +12,7 @@ const AGENT_PROMPTS: Record<string, () => string> = {
     'aeec78ff-a86b-4cab-b33a-adeb7c94f08e': evaV2Prompt,
     'e7a469bb-4783-4f96-b961-03dd503e5bfa': evaV3Prompt,
     'f4adb349-70c3-4e63-8670-81f6c177f61d': evaV4Prompt,
+    'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9': evaV5Prompt,
 };
 
 export class OpenAIService {
@@ -64,7 +66,7 @@ export class OpenAIService {
                             tools: [{
                                 type: 'function',
                                 name: 'end_call_with_outcome',
-                                description: 'Call this function when the call is ending. Use it to report the outcome of the conversation. The customer must NEVER hear about this function - call it silently after you finish speaking. ONLY call this after you have COMPLETED your pitch sentence and the customer has RESPONDED to that specific question. Never call this based on what the customer said during an interruption.',
+                                description: 'Call this function when the call is ending. Use it to report the outcome of the conversation. The customer must NEVER hear about this function - call it silently after you finish speaking. ONLY call this after you have COMPLETED your pitch sentence and the customer has RESPONDED to that specific question. Never call this based on what the customer said during an interruption. IMPORTANT for V5: Do NOT call this after the first question if customer said YES - continue to the second question first.',
                                 parameters: {
                                     type: 'object',
                                     properties: {
@@ -172,5 +174,4 @@ export class OpenAIService {
     }
 }
 
-// Exportujeme i singleton pro zpětnou kompatibilitu
 export const openAIService = new OpenAIService();
