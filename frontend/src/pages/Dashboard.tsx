@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { getLeads, getUsers, blacklistLead, reassignLeads, Lead, User } from '../api';
+import { getLeads, getUsers, blacklistLead, reassignLeads, deleteLeads, Lead, User } from '../api';
 
 const AI_AGENT_ID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
 const PAGE_SIZE = 500;
@@ -49,7 +49,7 @@ const Dashboard: React.FC = () => {
     // Audio
     const [playingUrl, setPlayingUrl] = useState<string | null>(null);
 
-    // Přeřazení leadů
+    // Panel přeřazení
     const [showReassign, setShowReassign] = useState(false);
     const [reassignFrom, setReassignFrom] = useState(AI_AGENT_ID);
     const [reassignTo, setReassignTo] = useState('aeec78ff-a86b-4cab-b33a-adeb7c94f08e');
@@ -57,6 +57,15 @@ const Dashboard: React.FC = () => {
     const [reassigning, setReassigning] = useState(false);
     const [reassignResult, setReassignResult] = useState<string | null>(null);
     const [reassignError, setReassignError] = useState('');
+
+    // Panel mazání
+    const [showDelete, setShowDelete] = useState(false);
+    const [deleteAgentId, setDeleteAgentId] = useState(AI_AGENT_ID);
+    const [deleteCount, setDeleteCount] = useState(100);
+    const [deleteConfirm, setDeleteConfirm] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+    const [deleteResult, setDeleteResult] = useState<string | null>(null);
+    const [deleteError, setDeleteError] = useState('');
 
     const fetchLeads = useCallback(async () => {
         setLoading(true);
@@ -129,6 +138,26 @@ const Dashboard: React.FC = () => {
         }
     };
 
+    const handleDelete = async () => {
+        if (!deleteConfirm) {
+            setDeleteConfirm(true);
+            return;
+        }
+        setDeleting(true);
+        setDeleteResult(null);
+        setDeleteError('');
+        setDeleteConfirm(false);
+        try {
+            const res = await deleteLeads(deleteAgentId, deleteCount);
+            setDeleteResult(res.message);
+            await fetchLeads();
+        } catch (err: any) {
+            setDeleteError(err.message || 'Chyba při mazání');
+        } finally {
+            setDeleting(false);
+        }
+    };
+
     const formatDuration = (sec: number | null) => {
         if (!sec) return '—';
         const m = Math.floor(sec / 60);
@@ -161,9 +190,26 @@ const Dashboard: React.FC = () => {
                 <div style={{ display: 'flex', gap: 10 }}>
                     <button
                         className={`btn ${showReassign ? 'btn-primary' : 'btn-outline'} btn-sm`}
-                        onClick={() => { setShowReassign(!showReassign); setReassignResult(null); setReassignError(''); }}
+                        onClick={() => {
+                            setShowReassign(!showReassign);
+                            setShowDelete(false);
+                            setReassignResult(null);
+                            setReassignError('');
+                        }}
                     >
                         🔀 Přeřadit leady
+                    </button>
+                    <button
+                        className={`btn ${showDelete ? 'btn-danger' : 'btn-outline'} btn-sm`}
+                        onClick={() => {
+                            setShowDelete(!showDelete);
+                            setShowReassign(false);
+                            setDeleteResult(null);
+                            setDeleteError('');
+                            setDeleteConfirm(false);
+                        }}
+                    >
+                        🗑 Smazat leady
                     </button>
                     <button className="btn btn-outline btn-sm" onClick={fetchLeads}>
                         ↻ Obnovit
@@ -182,72 +228,95 @@ const Dashboard: React.FC = () => {
                     </div>
                     <div className="card-body">
                         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-
-                            {/* Od agenta */}
                             <div className="form-group" style={{ margin: 0, minWidth: 200 }}>
                                 <label className="form-label">Od agenta</label>
-                                <select
-                                    className="form-select"
-                                    value={reassignFrom}
-                                    onChange={(e) => setReassignFrom(e.target.value)}
-                                >
-                                    {AGENTS.map(a => (
-                                        <option key={a.id} value={a.id}>{a.name} — {a.description}</option>
-                                    ))}
+                                <select className="form-select" value={reassignFrom} onChange={(e) => setReassignFrom(e.target.value)}>
+                                    {AGENTS.map(a => <option key={a.id} value={a.id}>{a.name} — {a.description}</option>)}
                                 </select>
                             </div>
-
-                            {/* Šipka */}
                             <div style={{ fontSize: 20, color: 'var(--gray-400)', paddingBottom: 4 }}>→</div>
-
-                            {/* K agentovi */}
                             <div className="form-group" style={{ margin: 0, minWidth: 200 }}>
                                 <label className="form-label">K agentovi</label>
-                                <select
-                                    className="form-select"
-                                    value={reassignTo}
-                                    onChange={(e) => setReassignTo(e.target.value)}
-                                >
-                                    {AGENTS.map(a => (
-                                        <option key={a.id} value={a.id}>{a.name} — {a.description}</option>
-                                    ))}
+                                <select className="form-select" value={reassignTo} onChange={(e) => setReassignTo(e.target.value)}>
+                                    {AGENTS.map(a => <option key={a.id} value={a.id}>{a.name} — {a.description}</option>)}
                                 </select>
                             </div>
-
-                            {/* Počet */}
                             <div className="form-group" style={{ margin: 0, minWidth: 120 }}>
                                 <label className="form-label">Počet leadů</label>
                                 <input
-                                    type="number"
-                                    className="form-input"
-                                    min={1}
-                                    max={10000}
+                                    type="number" className="form-input" min={1} max={10000}
                                     value={reassignCount}
                                     onChange={(e) => setReassignCount(Math.max(1, Number(e.target.value)))}
                                 />
                             </div>
-
-                            {/* Tlačítko */}
                             <button
                                 className="btn btn-primary"
                                 onClick={handleReassign}
                                 disabled={reassigning || reassignFrom === reassignTo}
                                 style={{ marginBottom: 1 }}
                             >
-                                {reassigning ? (
-                                    <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Přeřazuji...</>
-                                ) : (
-                                    '🔀 Přeřadit'
-                                )}
+                                {reassigning ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Přeřazuji...</> : '🔀 Přeřadit'}
                             </button>
                         </div>
+                        {reassignError && <div className="alert alert-danger mt-8">⚠️ {reassignError}</div>}
+                        {reassignResult && <div className="alert alert-success mt-8">✅ {reassignResult}</div>}
+                    </div>
+                </div>
+            )}
 
-                        {reassignError && (
-                            <div className="alert alert-danger mt-8">⚠️ {reassignError}</div>
-                        )}
-                        {reassignResult && (
-                            <div className="alert alert-success mt-8">✅ {reassignResult}</div>
-                        )}
+            {/* PANEL MAZÁNÍ */}
+            {showDelete && (
+                <div className="card mb-16" style={{ borderColor: 'var(--danger)' }}>
+                    <div className="card-header" style={{ borderBottomColor: '#fecaca' }}>
+                        <span className="card-title" style={{ color: 'var(--danger)' }}>🗑 Hromadné mazání leadů (NOVY)</span>
+                        <span style={{ fontSize: 12, color: 'var(--gray-400)' }}>
+              Natvrdo smaže z DB · čísla půjdou znovu importovat
+            </span>
+                    </div>
+                    <div className="card-body">
+                        <div className="alert alert-danger mb-16">
+                            ⚠️ <strong>Pozor!</strong> Leady budou trvale smazány včetně všech záznamů. Tuto akci nelze vrátit.
+                        </div>
+                        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                            <div className="form-group" style={{ margin: 0, minWidth: 200 }}>
+                                <label className="form-label">Agent</label>
+                                <select className="form-select" value={deleteAgentId} onChange={(e) => { setDeleteAgentId(e.target.value); setDeleteConfirm(false); }}>
+                                    {AGENTS.map(a => <option key={a.id} value={a.id}>{a.name} — {a.description}</option>)}
+                                </select>
+                            </div>
+                            <div className="form-group" style={{ margin: 0, minWidth: 120 }}>
+                                <label className="form-label">Počet leadů</label>
+                                <input
+                                    type="number" className="form-input" min={1} max={10000}
+                                    value={deleteCount}
+                                    onChange={(e) => { setDeleteCount(Math.max(1, Number(e.target.value))); setDeleteConfirm(false); }}
+                                />
+                            </div>
+                            <button
+                                className={`btn ${deleteConfirm ? 'btn-danger' : 'btn-outline'}`}
+                                onClick={handleDelete}
+                                disabled={deleting}
+                                style={{ marginBottom: 1 }}
+                            >
+                                {deleting
+                                    ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Mažu...</>
+                                    : deleteConfirm
+                                        ? `⚠️ POTVRDIT smazání ${deleteCount} leadů`
+                                        : `🗑 Smazat ${deleteCount} leadů`
+                                }
+                            </button>
+                            {deleteConfirm && (
+                                <button
+                                    className="btn btn-outline"
+                                    onClick={() => setDeleteConfirm(false)}
+                                    style={{ marginBottom: 1 }}
+                                >
+                                    ✕ Zrušit
+                                </button>
+                            )}
+                        </div>
+                        {deleteError && <div className="alert alert-danger mt-8">⚠️ {deleteError}</div>}
+                        {deleteResult && <div className="alert alert-success mt-8">✅ {deleteResult}</div>}
                     </div>
                 </div>
             )}
@@ -257,44 +326,27 @@ const Dashboard: React.FC = () => {
                 <div className="card-body" style={{ padding: '14px 20px' }}>
                     <form onSubmit={handleSearch} className="filters-bar">
                         <input
-                            type="text"
-                            className="form-input search-input"
+                            type="text" className="form-input search-input"
                             placeholder="🔍 Hledat telefon, firma, kontakt..."
                             value={searchInput}
                             onChange={(e) => setSearchInput(e.target.value)}
                         />
-                        <select
-                            className="form-select"
-                            value={filterStatus}
-                            onChange={(e) => setFilterStatus(e.target.value)}
-                        >
+                        <select className="form-select" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
                             <option value="">Všechny statusy</option>
-                            {ALL_STATUSES.map((s) => (
-                                <option key={s} value={s}>{STATUS_LABELS[s]?.label || s}</option>
-                            ))}
+                            {ALL_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABELS[s]?.label || s}</option>)}
                         </select>
-                        <select
-                            className="form-select"
-                            value={filterAssignedTo}
-                            onChange={(e) => setFilterAssignedTo(e.target.value)}
-                        >
+                        <select className="form-select" value={filterAssignedTo} onChange={(e) => setFilterAssignedTo(e.target.value)}>
                             <option value="">Všichni agenti</option>
-                            {users.map((u) => (
-                                <option key={u.id} value={u.id}>{u.fullName}</option>
-                            ))}
+                            {users.map((u) => <option key={u.id} value={u.id}>{u.fullName}</option>)}
                         </select>
                         <button type="submit" className="btn btn-primary">Hledat</button>
                         {(filterStatus !== 'NOVY' || filterSearch || filterAssignedTo !== AI_AGENT_ID) && (
-                            <button
-                                type="button"
-                                className="btn btn-outline"
-                                onClick={() => {
-                                    setFilterStatus('NOVY');
-                                    setFilterSearch('');
-                                    setSearchInput('');
-                                    setFilterAssignedTo(AI_AGENT_ID);
-                                }}
-                            >
+                            <button type="button" className="btn btn-outline" onClick={() => {
+                                setFilterStatus('NOVY');
+                                setFilterSearch('');
+                                setSearchInput('');
+                                setFilterAssignedTo(AI_AGENT_ID);
+                            }}>
                                 ✕ Reset
                             </button>
                         )}
@@ -350,9 +402,7 @@ const Dashboard: React.FC = () => {
                                             <div className="audio-player">
                                                 {playingUrl === aiLog.recordingUrl ? (
                                                     <audio
-                                                        src={aiLog.recordingUrl}
-                                                        controls
-                                                        autoPlay
+                                                        src={aiLog.recordingUrl} controls autoPlay
                                                         style={{ width: 200, height: 28 }}
                                                         onEnded={() => setPlayingUrl(null)}
                                                     />
@@ -362,26 +412,19 @@ const Dashboard: React.FC = () => {
                                                     </button>
                                                 )}
                                             </div>
-                                        ) : (
-                                            <span className="td-muted">—</span>
-                                        )}
+                                        ) : <span className="td-muted">—</span>}
                                     </td>
                                     <td className="td-muted">{formatDuration(aiLog?.duration)}</td>
                                     <td style={{ maxWidth: 220 }}>
                                         {aiLog?.aiNotes ? (
-                                            <span
-                                                style={{
-                                                    fontSize: 12, color: 'var(--gray-600)',
-                                                    display: '-webkit-box', WebkitLineClamp: 2,
-                                                    WebkitBoxOrient: 'vertical', overflow: 'hidden',
-                                                }}
-                                                title={aiLog.aiNotes}
-                                            >
+                                            <span style={{
+                                                fontSize: 12, color: 'var(--gray-600)',
+                                                display: '-webkit-box', WebkitLineClamp: 2,
+                                                WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                                            }} title={aiLog.aiNotes}>
                           {aiLog.aiNotes}
                         </span>
-                                        ) : (
-                                            <span className="td-muted">—</span>
-                                        )}
+                                        ) : <span className="td-muted">—</span>}
                                     </td>
                                     <td className="td-muted" style={{ whiteSpace: 'nowrap' }}>
                                         {new Date(lead.updatedAt).toLocaleDateString('cs-CZ', {
@@ -418,11 +461,7 @@ const Dashboard: React.FC = () => {
                             <button className="pagination-btn" onClick={() => setPage(1)} disabled={page === 1}>«</button>
                             <button className="pagination-btn" onClick={() => setPage(p => p - 1)} disabled={page === 1}>‹</button>
                             {renderPageNumbers().map((p) => (
-                                <button
-                                    key={p}
-                                    className={`pagination-btn ${p === page ? 'active' : ''}`}
-                                    onClick={() => setPage(p)}
-                                >
+                                <button key={p} className={`pagination-btn ${p === page ? 'active' : ''}`} onClick={() => setPage(p)}>
                                     {p}
                                 </button>
                             ))}

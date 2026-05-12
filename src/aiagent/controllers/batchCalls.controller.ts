@@ -506,3 +506,77 @@ export const blacklistLead = async (req: Request, res: Response, next: NextFunct
         next(error);
     }
 };
+
+// ============================================
+// POST /api/ai-calls/delete-leads
+// Hromadné mazání NOVY leadů per agent
+// Leady se natvrdo smažou z DB včetně deduplication záznamu
+// ============================================
+export const deleteLeads = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { agentId, count } = req.body;
+
+        if (!agentId || !count) {
+            res.status(400).json({ error: { message: 'Chybí parametry: agentId, count', statusCode: 400 } });
+            return;
+        }
+
+        if (count < 1 || count > 10000) {
+            res.status(400).json({ error: { message: 'Počet musí být mezi 1 a 10000', statusCode: 400 } });
+            return;
+        }
+
+        // Ověř agenta
+        const agentCheck = await pool.query(
+            `SELECT id, full_name FROM users WHERE id = $1 AND is_active = true`,
+            [agentId]
+        );
+
+        if (agentCheck.rows.length === 0) {
+            res.status(400).json({ error: { message: 'Agent nenalezen', statusCode: 400 } });
+            return;
+        }
+
+        // Nejdřív zjisti kolik jich bude smazáno
+        const countResult = await pool.query(
+            `SELECT COUNT(*) AS total FROM leads
+             WHERE status = 'NOVY'
+             AND assigned_to = $1
+             AND (ai_call_status IS NULL OR ai_call_status = 'failed')`,
+            [agentId]
+        );
+
+        const available = parseInt(countResult.rows[0].total);
+        const toDelete = Math.min(count, available);
+
+        if (toDelete === 0) {
+            res.status(200).json({ deleted: 0, message: 'Žádné NOVY leady k mazání' });
+            return;
+        }
+
+        // Smaž natvrdo — CASCADE zajistí smazání ai_call_logs, lead_comments atd.
+        const result = await pool.query(
+            `DELETE FROM leads
+             WHERE id IN (
+                 SELECT id FROM leads
+                 WHERE status = 'NOVY'
+                 AND assigned_to = $1
+                 AND (ai_call_status IS NULL OR ai_call_status = 'failed')
+                 ORDER BY created_at ASC
+                 LIMIT $2
+             )
+             RETURNING id`,
+            [agentId, toDelete]
+        );
+
+        const deleted = result.rows.length;
+
+        res.status(200).json({
+            success: true,
+            deleted,
+            message: `${deleted} leadů smazáno (agent: ${agentCheck.rows[0].full_name})`,
+        });
+    } catch (error) {
+        next(error);
+    }
+};

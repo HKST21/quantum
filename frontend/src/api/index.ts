@@ -52,6 +52,12 @@ export const getLeads = (params: {
 export const blacklistLead = (id: string) =>
     fetchJson(`/ai-calls/leads/${id}/blacklist`, { method: 'PATCH' });
 
+export const deleteLeads = (agentId: string, count: number) =>
+    fetchJson('/ai-calls/delete-leads', {
+        method: 'POST',
+        body: JSON.stringify({ agentId, count }),
+    });
+
 export const reassignLeads = (fromAgentId: string, toAgentId: string, count: number) =>
     fetchJson('/ai-calls/reassign-leads', {
         method: 'POST',

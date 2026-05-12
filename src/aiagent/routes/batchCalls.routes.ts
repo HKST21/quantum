@@ -12,6 +12,7 @@ import {
     importLeads,
     verifyPassword,
     reassignLeads,
+    deleteLeads,
 } from '../controllers/batchCalls.controller';
 import { authenticate } from '../../middleware/authenticate';
 import { authorize } from '../../middleware/authorize';
@@ -44,6 +45,7 @@ router.get('/avg-duration', getAvgDuration);
 router.post('/import-leads', upload.single('file'), importLeads);
 router.post('/verify-password', verifyPassword);
 router.post('/reassign-leads', reassignLeads);
+router.post('/delete-leads', deleteLeads);
 
 router.patch('/leads/:id/blacklist', blacklistLead);
 
