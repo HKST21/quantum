@@ -1,9 +1,10 @@
 import WebSocket from 'ws';
-import { openAIService } from '../services/openAIService';
+import { OpenAIService } from '../services/openAIService';
 
 interface ActiveCall {
     twilioWs: WebSocket;
     openaiWs: WebSocket | null;
+    openaiService: OpenAIService;  // každý hovor má vlastní instanci
     streamSid: string | null;
     callSid: string;
     leadId: string;
@@ -20,7 +21,6 @@ export class CallHandler {
     private activeCalls: Map<string, ActiveCall> = new Map();
     private agentMap: Map<string, string> = new Map(); // callSid → agentUserId
 
-    // Nastaví agenta pro hovor před WebSocket připojením
     setAgentForCall(callSid: string, agentUserId: string): void {
         this.agentMap.set(callSid, agentUserId);
         console.log(`🤖 Agent set for call ${callSid}: ${agentUserId}`);
@@ -33,24 +33,35 @@ export class CallHandler {
         leadData: { companyName: string; contactPerson: string; phone: string },
         streamSid: string | null
     ): Promise<void> {
-        console.log('📞 New call WebSocket connection:', { callSid, leadId });
+        console.log('📞 New call WebSocket connection:', { callSid, leadId, streamSid });
 
-        // Získej agentUserId z mapy nebo použij default
         const agentUserId = this.agentMap.get(callSid) || process.env.AI_AGENT_USER_ID || '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
-        this.agentMap.delete(callSid); // Vyčisti po použití
+        this.agentMap.delete(callSid);
 
         console.log(`🤖 Using agent: ${agentUserId} for call: ${callSid}`);
 
         try {
-            await openAIService.createSession(leadData, agentUserId);
-            const openaiWs = openAIService.getWebSocket();
+            // KLÍČOVÁ ZMĚNA: nová instance OpenAI pro každý hovor
+            const localOpenAIService = new OpenAIService();
+            await localOpenAIService.createSession(leadData, agentUserId);
+            const openaiWs = localOpenAIService.getWebSocket();
 
             if (!openaiWs) throw new Error('Failed to create OpenAI session');
 
             this.activeCalls.set(callSid, {
-                twilioWs, openaiWs, streamSid, callSid, leadId, agentUserId,
-                transcript: [], outcome: null, monitoringActive: false,
+                twilioWs,
+                openaiWs,
+                openaiService: localOpenAIService,
+                streamSid,
+                callSid,
+                leadId,
+                agentUserId,
+                transcript: [],
+                outcome: null,
+                monitoringActive: false,
             });
+
+            console.log('✅ StreamSid initialized:', streamSid);
 
             const forceEndTimeout = setTimeout(() => {
                 console.warn('⬰ MAX CALL DURATION (120s) - Force ending');
@@ -63,7 +74,8 @@ export class CallHandler {
             this.setupTwilioHandlers(callSid);
             this.setupOpenAIHandlers(callSid);
 
-            console.log('✅ Call handler initialized:', callSid);
+            console.log('✅ Call handler initialized for:', callSid);
+            console.log('🛡️ Safety: Force end after 120 seconds');
         } catch (error) {
             console.error('❌ Failed to initialize call handler:', error);
             twilioWs.close();
@@ -85,11 +97,19 @@ export class CallHandler {
                         if (updatedCall) {
                             updatedCall.streamSid = data.start.streamSid;
                             this.activeCalls.set(callSid, updatedCall);
+                            console.log('✅ StreamSid saved:', updatedCall.streamSid);
                         }
                         break;
+
                     case 'media':
-                        if (data.media?.payload) openAIService.sendAudio(data.media.payload);
+                        if (data.media?.payload) {
+                            const currentCall = this.activeCalls.get(callSid);
+                            if (currentCall) {
+                                currentCall.openaiService.sendAudio(data.media.payload);
+                            }
+                        }
                         break;
+
                     case 'stop':
                         console.log('📞 Twilio stream stopped');
                         this.cleanupCall(callSid);
@@ -100,8 +120,15 @@ export class CallHandler {
             }
         });
 
-        call.twilioWs.on('close', () => { console.log('🔌 Twilio WS closed:', callSid); this.cleanupCall(callSid); });
-        call.twilioWs.on('error', (error) => { console.error('❌ Twilio WS error:', error); this.cleanupCall(callSid); });
+        call.twilioWs.on('close', () => {
+            console.log('🔌 Twilio WebSocket closed:', callSid);
+            this.cleanupCall(callSid);
+        });
+
+        call.twilioWs.on('error', (error) => {
+            console.error('❌ Twilio WS error:', error);
+            this.cleanupCall(callSid);
+        });
     }
 
     private setupOpenAIHandlers(callSid: string): void {
@@ -120,14 +147,19 @@ export class CallHandler {
                     case 'response.output_audio.delta':
                         if (data.delta) {
                             const currentCall = this.activeCalls.get(callSid);
-                            if (currentCall?.streamSid) this.sendAudioToTwilio(callSid, data.delta);
+                            if (currentCall?.streamSid) {
+                                this.sendAudioToTwilio(callSid, data.delta);
+                            }
                         }
                         break;
 
                     case 'response.output_audio.done':
-                        console.log('📊 AI finished speaking');
+                        console.log('🔊 AI finished speaking');
                         if (call.monitoringActive) {
-                            if (call.fallbackTimeout) { clearTimeout(call.fallbackTimeout); call.fallbackTimeout = undefined; }
+                            if (call.fallbackTimeout) {
+                                clearTimeout(call.fallbackTimeout);
+                                call.fallbackTimeout = undefined;
+                            }
                             call.gracefulTimeout = setTimeout(() => {
                                 console.log('🛑 Ending call gracefully');
                                 this.cleanupCall(callSid);
@@ -159,17 +191,31 @@ export class CallHandler {
 
                     case 'response.function_call_arguments.done':
                         if (data.name === 'end_call_with_outcome' && data.arguments) {
-                            call.outcome = openAIService.parseOutcome({ name: data.name, arguments: data.arguments });
-                            call.monitoringActive = true;
-                            console.log('✅ Call outcome determined:', call.outcome.outcome);
+                            const currentCall = this.activeCalls.get(callSid);
+                            if (currentCall) {
+                                currentCall.outcome = currentCall.openaiService.parseOutcome({
+                                    name: data.name,
+                                    arguments: data.arguments,
+                                });
+                                currentCall.monitoringActive = true;
+                                console.log('✅ Call outcome determined:', currentCall.outcome.outcome);
 
-                            call.fallbackTimeout = setTimeout(() => {
-                                if (this.activeCalls.has(callSid)) {
-                                    console.log('⬰ Fallback timeout - force ending');
-                                    this.cleanupCall(callSid);
-                                }
-                            }, 10000);
+                                currentCall.fallbackTimeout = setTimeout(() => {
+                                    if (this.activeCalls.has(callSid)) {
+                                        console.log('⬰ Fallback timeout - force ending');
+                                        this.cleanupCall(callSid);
+                                    }
+                                }, 10000);
+                            }
                         }
+                        break;
+
+                    case 'session.updated':
+                        console.log('✅ OpenAI session configured');
+                        break;
+
+                    case 'response.done':
+                        console.log('✅ OpenAI response completed');
                         break;
 
                     case 'error':
@@ -182,9 +228,12 @@ export class CallHandler {
         });
 
         call.openaiWs.on('close', () => console.log('🔌 OpenAI WS closed:', callSid));
+
         call.openaiWs.on('error', (error) => {
             console.error('❌ OpenAI WS error:', error);
-            setTimeout(() => { if (this.activeCalls.has(callSid)) this.cleanupCall(callSid); }, 3000);
+            setTimeout(() => {
+                if (this.activeCalls.has(callSid)) this.cleanupCall(callSid);
+            }, 3000);
         });
     }
 
@@ -219,7 +268,7 @@ export class CallHandler {
         if (call.fallbackTimeout) clearTimeout(call.fallbackTimeout);
         if (call.forceEndTimeout) clearTimeout(call.forceEndTimeout);
 
-        openAIService.closeSession();
+        call.openaiService.closeSession();
 
         if (call.twilioWs.readyState === WebSocket.OPEN) call.twilioWs.close();
 

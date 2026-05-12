@@ -5,7 +5,7 @@ import { normalizePhoneNumber } from '../utils/phoneUtils';
 export class TwilioService {
     private client: Twilio.Twilio;
     private backendUrl: string;
-    private twilioPhoneNumber: string;
+    private defaultPhoneNumber: string;
 
     constructor() {
         const accountSid = process.env.TWILIO_ACCOUNT_SID;
@@ -17,24 +17,43 @@ export class TwilioService {
 
         this.client = Twilio(accountSid, authToken);
         this.backendUrl = process.env.BACKEND_URL || 'https://localhost:5000';
-        this.twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER || '';
+        this.defaultPhoneNumber = process.env.TWILIO_PHONE_NUMBER || '';
 
         console.log('✅ TwilioService initialized:', {
             backendUrl: this.backendUrl,
-            twilioPhone: this.twilioPhoneNumber,
+            defaultPhone: this.defaultPhoneNumber,
         });
     }
 
-    async initiateCall(leadPhone: string, leadId: string): Promise<TwilioCallResponse> {
+    /**
+     * Initiate outbound call
+     * @param fromNumber - volitelné, pokud není zadáno použije TWILIO_PHONE_NUMBER z ENV
+     */
+    async initiateCall(
+        leadPhone: string,
+        leadId: string,
+        fromNumber?: string
+    ): Promise<TwilioCallResponse> {
         try {
             const { normalized, isValid } = normalizePhoneNumber(leadPhone);
             if (!isValid) throw new Error(`Invalid phone number format: ${leadPhone}`);
 
-            console.log('📞 Initiating Twilio call:', { to: normalized, from: this.twilioPhoneNumber, leadId });
+            // Použij předané číslo nebo fallback na ENV
+            const callerNumber = fromNumber || this.defaultPhoneNumber;
+
+            if (!callerNumber) {
+                throw new Error('No caller phone number configured');
+            }
+
+            console.log('📞 Initiating Twilio call:', {
+                to: normalized,
+                from: callerNumber,
+                leadId,
+            });
 
             const call = await this.client.calls.create({
                 to: normalized,
-                from: this.twilioPhoneNumber,
+                from: callerNumber,
                 url: `${this.backendUrl}/api/ai-calls/webhook/twiml`,
                 statusCallback: `${this.backendUrl}/api/ai-calls/webhook/status-callback`,
                 statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
@@ -45,7 +64,13 @@ export class TwilioService {
                 recordingStatusCallbackEvent: ['completed'],
             });
 
-            console.log('✅ Twilio call created:', { callSid: call.sid, status: call.status });
+            console.log('✅ Twilio call created:', {
+                callSid: call.sid,
+                status: call.status,
+                to: call.to,
+                from: call.from,
+                recording: 'enabled',
+            });
 
             return { sid: call.sid, status: call.status, to: call.to, from: call.from, duration: null };
         } catch (error: any) {
@@ -77,7 +102,6 @@ export class TwilioService {
 
     generateTwiML(callSid: string): string {
         const wsUrl = `wss://${this.backendUrl.replace('https://', '')}/api/ai-calls/websocket`;
-
         return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>

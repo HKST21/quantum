@@ -7,10 +7,10 @@ import { evaV4Prompt } from '../prompts/eva_v4';
 
 // Mapa agentů → prompty
 const AGENT_PROMPTS: Record<string, () => string> = {
-    '53c65ca7-68bc-4948-83e5-35a64c17f0fb': evaV1Prompt, // Eva V1 — VIP ceník do SMS
-    'aeec78ff-a86b-4cab-b33a-adeb7c94f08e': evaV2Prompt, // Eva V2 — 40% úspora
-    'e7a469bb-4783-4f96-b961-03dd503e5bfa': evaV3Prompt, // Eva V3 — nepřeplácíte?
-    'f4adb349-70c3-4e63-8670-81f6c177f61d': evaV4Prompt, // Eva V4 — nezávazné porovnání
+    '53c65ca7-68bc-4948-83e5-35a64c17f0fb': evaV1Prompt,
+    'aeec78ff-a86b-4cab-b33a-adeb7c94f08e': evaV2Prompt,
+    'e7a469bb-4783-4f96-b961-03dd503e5bfa': evaV3Prompt,
+    'f4adb349-70c3-4e63-8670-81f6c177f61d': evaV4Prompt,
 };
 
 export class OpenAIService {
@@ -41,7 +41,7 @@ export class OpenAIService {
                 const agentId = agentUserId || process.env.AI_AGENT_USER_ID || '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
                 const prompt = this.getPromptForAgent(agentId);
 
-                console.log(`🤖 Creating OpenAI session for agent: ${agentId}`);
+                console.log(`🤖 Creating OpenAI Realtime session for agent: ${agentId}`);
 
                 this.ws = new WebSocket(
                     'wss://api.openai.com/v1/realtime?model=gpt-realtime',
@@ -145,6 +145,7 @@ export class OpenAIService {
 
     closeSession(): void {
         if (this.ws) {
+            console.log('🔌 Closing OpenAI session...');
             this.ws.close();
             this.ws = null;
         }
@@ -171,4 +172,5 @@ export class OpenAIService {
     }
 }
 
+// Exportujeme i singleton pro zpětnou kompatibilitu
 export const openAIService = new OpenAIService();

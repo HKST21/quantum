@@ -26,11 +26,17 @@ export class CallOrchestrator {
         }
     }
 
-    async processLead(leadId: string, agentUserId: string): Promise<void> {
+    /**
+     * Process a single lead call
+     * @param leadId - UUID leadu
+     * @param agentUserId - UUID agenta (pro výběr promptu)
+     * @param fromNumber - volitelné číslo ze kterého se volá (pro multi-worker)
+     */
+    async processLead(leadId: string, agentUserId: string, fromNumber?: string): Promise<void> {
         let callSid: string | null = null;
 
         try {
-            console.log(`🎯 Processing lead: ${leadId} (agent: ${agentUserId})`);
+            console.log(`🎯 Processing lead: ${leadId} (agent: ${agentUserId}${fromNumber ? `, from: ${fromNumber}` : ''})`);
 
             const leadResult = await pool.query(
                 `SELECT id, company_name, contact_person, phone, email FROM leads WHERE id = $1`,
@@ -41,7 +47,7 @@ export class CallOrchestrator {
 
             const lead = leadResult.rows[0];
 
-            console.log('📞 Calling lead:', { id: lead.id, phone: lead.phone });
+            console.log('📞 Calling lead:', { id: lead.id, company: lead.company_name, phone: lead.phone });
 
             await pool.query(
                 `UPDATE leads
@@ -51,19 +57,18 @@ export class CallOrchestrator {
                 [leadId]
             );
 
-            const callResponse = await twilioService.initiateCall(lead.phone, leadId);
+            // Předáme fromNumber do twilioService
+            const callResponse = await twilioService.initiateCall(lead.phone, leadId, fromNumber);
             callSid = callResponse.sid;
 
             console.log('✅ Twilio call initiated:', callSid);
 
-            // Ulož agentUserId do call logu pro správný prompt výběr
             await pool.query(
-                `INSERT INTO ai_call_logs (lead_id, call_sid, status, started_at)
-                 VALUES ($1, $2, 'calling', NOW())`,
+                `INSERT INTO ai_call_logs (lead_id, call_sid, status, started_at) VALUES ($1, $2, 'calling', NOW())`,
                 [leadId, callSid]
             );
 
-            // Předej agentUserId do callHandleru přes metadata
+            // Nastav agenta pro WebSocket handler
             callHandler.setAgentForCall(callSid, agentUserId);
 
             const maxWaitTime = 90000;

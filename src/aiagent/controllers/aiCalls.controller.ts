@@ -10,26 +10,60 @@ import {
 
 const DEFAULT_AI_AGENT_ID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
 
+// ============================================
+// HELPER: načti čísla workerů z ENV
+// AI_PHONE_1, AI_PHONE_2, ... AI_PHONE_5
+// Fallback na TWILIO_PHONE_NUMBER
+// ============================================
+const getWorkerPhoneNumbers = (): string[] => {
+    const numbers: string[] = [];
+    let i = 1;
+    while (true) {
+        const num = process.env[`AI_PHONE_${i}`];
+        if (!num) break;
+        numbers.push(num);
+        i++;
+    }
+    if (numbers.length === 0 && process.env.TWILIO_PHONE_NUMBER) {
+        numbers.push(process.env.TWILIO_PHONE_NUMBER);
+    }
+    return numbers;
+};
+
 export const startAICalling = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        const { leadIds, maxCalls = 50, agentUserId } = req.body as StartAICallingRequest & { agentUserId?: string };
+        const {
+            leadIds,
+            maxCalls = 50,
+            agentUserId,
+            workers = 1,
+        } = req.body as StartAICallingRequest & { agentUserId?: string; workers?: number };
 
-        // Použij agentUserId z requestu nebo default z env
         const activeAgentId = agentUserId || process.env.AI_AGENT_USER_ID || DEFAULT_AI_AGENT_ID;
 
         console.log(`🚀 AI Calling start requested by: ${req.user?.fullName} | Agent: ${activeAgentId}`);
+        console.log('📋 Parameters:', { leadIds, maxCalls, agentUserId: activeAgentId, workers });
 
-        // Ověř že agent existuje
+        // Ověř agenta
         const agentCheck = await pool.query(
             `SELECT id, full_name FROM users WHERE id = $1 AND is_active = true`,
             [activeAgentId]
         );
-        if (agentCheck.rows.length === 0) throw new BadRequestError(`Agent ${activeAgentId} nenalezen nebo není aktivní`);
+        if (agentCheck.rows.length === 0) throw new BadRequestError(`Agent ${activeAgentId} nenalezen`);
 
-        console.log(`🤖 Using agent: ${agentCheck.rows[0].full_name}`);
+        // Načti dostupná čísla
+        const availableNumbers = getWorkerPhoneNumbers();
+        if (availableNumbers.length === 0) throw new BadRequestError('Žádná AI_PHONE_X čísla nejsou nakonfigurována');
+
+        // Počet workerů max = počet čísel
+        const actualWorkers = Math.min(Math.max(1, workers), availableNumbers.length);
+        if (actualWorkers < workers) {
+            console.warn(`⚠️ Požadováno ${workers} workerů ale máme ${availableNumbers.length} čísel → spouštíme ${actualWorkers}`);
+        }
+
+        console.log(`📞 Worker čísla (${actualWorkers}):`, availableNumbers.slice(0, actualWorkers));
 
         let leads;
-
         if (leadIds && leadIds.length > 0) {
             const result = await pool.query(
                 `SELECT id, company_name, contact_person, phone
@@ -44,29 +78,59 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
 
         if (leads.length === 0) throw new BadRequestError('Žádné leady k volání');
 
-        console.log(`✅ Found ${leads.length} leads to call`);
+        console.log(`✅ Found ${leads.length} leads to call (${actualWorkers} workers)`);
+
+        // Rozděl leady mezi workery (round-robin)
+        const workerLeads: any[][] = Array.from({ length: actualWorkers }, () => []);
+        leads.forEach((lead: any, index: number) => {
+            workerLeads[index % actualWorkers].push(lead);
+        });
+
+        workerLeads.forEach((chunk, i) => {
+            console.log(`👷 Worker ${i + 1} (${availableNumbers[i]}): ${chunk.length} leadů`);
+        });
 
         setImmediate(async () => {
-            console.log('🎯 Starting sequential calling...');
-            for (const lead of leads) {
-                try {
-                    console.log(`📞 Calling lead ${lead.id} (${lead.phone})...`);
-                    await callOrchestrator.processLead(lead.id, activeAgentId);
-                    console.log(`✅ Call completed for ${lead.id}`);
-                } catch (error) {
-                    console.error(`❌ Call failed for ${lead.id}:`, error);
-                }
-            }
-            console.log('🎉 All calls completed!');
+            console.log(`🎯 Starting ${actualWorkers} parallel workers...`);
+
+            const workerPromises = workerLeads.map((chunk, workerIndex) => {
+                const phoneNumber = availableNumbers[workerIndex];
+
+                return (async () => {
+                    console.log(`🟢 Worker ${workerIndex + 1} (${phoneNumber}) started with ${chunk.length} leads`);
+
+                    for (const lead of chunk) {
+                        try {
+                            console.log(`📞 [Worker ${workerIndex + 1}] Calling ${lead.id} (${lead.phone})...`);
+                            await callOrchestrator.processLead(lead.id, activeAgentId, phoneNumber);
+                            console.log(`✅ [Worker ${workerIndex + 1}] Done: ${lead.id}`);
+                        } catch (error) {
+                            console.error(`❌ [Worker ${workerIndex + 1}] Failed: ${lead.id}:`, error);
+                        }
+                    }
+
+                    console.log(`🏁 Worker ${workerIndex + 1} (${phoneNumber}) finished`);
+                })();
+            });
+
+            await Promise.all(workerPromises);
+            console.log('🎉 All workers completed!');
         });
 
         res.status(200).json({
             success: true,
-            message: `AI calling started for ${leads.length} leads`,
+            message: `AI calling started: ${actualWorkers} workerů, ${leads.length} leadů`,
             queuedLeads: leads.length,
             aiAgentId: activeAgentId,
             agentName: agentCheck.rows[0].full_name,
-        } as StartAICallingResponse & { agentName: string });
+            workers: actualWorkers,
+            workerNumbers: availableNumbers.slice(0, actualWorkers),
+            leadsPerWorker: workerLeads.map((chunk, i) => ({
+                worker: i + 1,
+                phone: availableNumbers[i],
+                leads: chunk.length,
+            })),
+        } as StartAICallingResponse & Record<string, any>);
     } catch (error) {
         next(error);
     }
@@ -87,17 +151,17 @@ export const stopAICalling = async (req: Request, res: Response, next: NextFunct
 
 export const getAICallStatus = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        const currentCallResult = await pool.query(
+        const activeCallsResult = await pool.query(
             `SELECT l.id, l.company_name, l.phone, l.ai_call_status, l.ai_last_call_at
-             FROM leads l WHERE l.ai_call_status = 'calling' LIMIT 1`
+             FROM leads l WHERE l.ai_call_status = 'calling'`
         );
 
-        const currentCall = currentCallResult.rows.length > 0 ? {
-            leadId: currentCallResult.rows[0].id,
-            companyName: currentCallResult.rows[0].company_name,
-            phone: currentCallResult.rows[0].phone,
-            aiCallStatus: currentCallResult.rows[0].ai_call_status,
-            startedAt: currentCallResult.rows[0].ai_last_call_at,
+        const currentCall = activeCallsResult.rows.length > 0 ? {
+            leadId: activeCallsResult.rows[0].id,
+            companyName: activeCallsResult.rows[0].company_name,
+            phone: activeCallsResult.rows[0].phone,
+            aiCallStatus: activeCallsResult.rows[0].ai_call_status,
+            startedAt: activeCallsResult.rows[0].ai_last_call_at,
         } : null;
 
         const queueResult = await pool.query(
@@ -113,12 +177,13 @@ export const getAICallStatus = async (_req: Request, res: Response, next: NextFu
         );
 
         res.status(200).json({
-            isRunning: currentCall !== null,
+            isRunning: activeCallsResult.rows.length > 0,
+            activeCalls: activeCallsResult.rows.length,
             currentCall,
             queueSize: parseInt(queueResult.rows[0].count),
             completedToday: parseInt(todayResult.rows[0].completed || 0),
             successfulToday: parseInt(todayResult.rows[0].successful || 0),
-        } as AICallStatusResponse);
+        } as AICallStatusResponse & Record<string, any>);
     } catch (error) {
         next(error);
     }
@@ -222,7 +287,7 @@ export const handleRecordingCallback = async (req: Request, res: Response, _next
         }
 
         const callLogResult = await pool.query(
-            `SELECT id, outcome, lead_id FROM ai_call_logs WHERE call_sid = $1`, [CallSid]
+            `SELECT id FROM ai_call_logs WHERE call_sid = $1`, [CallSid]
         );
 
         if (callLogResult.rows.length === 0) {

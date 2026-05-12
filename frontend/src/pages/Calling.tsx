@@ -45,10 +45,20 @@ const AGENTS: AgentOption[] = [
     },
 ];
 
+const MAX_WORKERS = 5;
+const WORKER_PHONES = [
+    '+420228810401',
+    '+420228810985',
+    '+420228811207',
+    '+420228810644',
+    '+420228811306',
+];
+
 const Calling: React.FC = () => {
     const [step, setStep] = useState<CallingStep>('setup');
     const [selectedAgent, setSelectedAgent] = useState<AgentOption>(AGENTS[0]);
     const [maxCalls, setMaxCalls] = useState<number>(100);
+    const [workers, setWorkers] = useState<number>(1);  // ← NOVÉ
     const [twilioNumber, setTwilioNumber] = useState<string>('');
     const [avgDuration, setAvgDuration] = useState<AvgDuration | null>(null);
     const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
@@ -107,18 +117,22 @@ const Calling: React.FC = () => {
         return () => { if (pollRef.current) clearInterval(pollRef.current); };
     }, [step, startPolling]);
 
-    const estimateTime = (calls: number): string => {
+    // ← UPRAVENO: odhad přepočítán per worker
+    const estimateTime = (calls: number, workerCount: number = 1): string => {
         if (!avgDuration) return '—';
-        const totalSeconds = calls * avgDuration.totalPerCall;
+        const callsPerWorker = Math.ceil(calls / workerCount);
+        const totalSeconds = callsPerWorker * avgDuration.totalPerCall;
         const hours = Math.floor(totalSeconds / 3600);
         const minutes = Math.floor((totalSeconds % 3600) / 60);
         if (hours > 0) return `~${hours}h ${minutes}min`;
         return `~${minutes}min`;
     };
 
+    // ← UPRAVENO: zbývající čas per worker
     const remainingTime = (): string => {
         if (!batchStatus || !avgDuration) return '—';
-        const totalSeconds = batchStatus.queueSize * avgDuration.totalPerCall;
+        const callsPerWorker = Math.ceil(batchStatus.queueSize / workers);
+        const totalSeconds = callsPerWorker * avgDuration.totalPerCall;
         const hours = Math.floor(totalSeconds / 3600);
         const minutes = Math.floor((totalSeconds % 3600) / 60);
         if (hours > 0) return `~${hours}h ${minutes}min`;
@@ -164,7 +178,8 @@ const Calling: React.FC = () => {
                 return;
             }
 
-            await startAICalling(maxCalls, selectedAgent.id);
+            // ← UPRAVENO: předáme workers
+            await startAICalling(maxCalls, selectedAgent.id, workers);
             const status = await getBatchStatus(selectedAgent.id);
             setBatchStatus(status);
             setStartedAt(new Date());
@@ -251,22 +266,54 @@ const Calling: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Telefonní číslo */}
+                            {/* ← NOVÉ: Výběr počtu workerů */}
                             <div className="form-group">
-                                <label className="form-label">Volající číslo</label>
-                                <div style={{
-                                    padding: '9px 12px',
-                                    background: 'var(--gray-50)',
-                                    border: '1px solid var(--gray-200)',
-                                    borderRadius: 'var(--radius)',
-                                    fontFamily: 'monospace',
-                                    fontSize: 15,
-                                    fontWeight: 700,
-                                    color: 'var(--primary)',
-                                }}>
-                                    {twilioNumber || '—'}
+                                <label className="form-label">
+                                    Počet workerů (paralelní volání)
+                                    <span style={{ fontWeight: 400, color: 'var(--gray-400)', marginLeft: 8, fontSize: 12 }}>
+                                        max {MAX_WORKERS}
+                                    </span>
+                                </label>
+                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                    {Array.from({ length: MAX_WORKERS }, (_, i) => i + 1).map(n => (
+                                        <button
+                                            key={n}
+                                            type="button"
+                                            className={`btn ${workers === n ? 'btn-primary' : 'btn-outline'}`}
+                                            style={{ minWidth: 44 }}
+                                            onClick={() => setWorkers(n)}
+                                        >
+                                            {n}
+                                        </button>
+                                    ))}
+                                </div>
+                                <div style={{ marginTop: 8, fontSize: 12, color: 'var(--gray-500)' }}>
+                                    {WORKER_PHONES.slice(0, workers).map((phone, i) => (
+                                        <span key={phone} style={{ marginRight: 10, fontFamily: 'monospace', color: 'var(--primary)' }}>
+                                            W{i + 1}: {phone}
+                                        </span>
+                                    ))}
                                 </div>
                             </div>
+
+                            {/* Telefonní číslo — skryjeme pokud workers > 1 */}
+                            {workers === 1 && (
+                                <div className="form-group">
+                                    <label className="form-label">Volající číslo</label>
+                                    <div style={{
+                                        padding: '9px 12px',
+                                        background: 'var(--gray-50)',
+                                        border: '1px solid var(--gray-200)',
+                                        borderRadius: 'var(--radius)',
+                                        fontFamily: 'monospace',
+                                        fontSize: 15,
+                                        fontWeight: 700,
+                                        color: 'var(--primary)',
+                                    }}>
+                                        {twilioNumber || '—'}
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Počet NOVY leadů */}
                             <div className="form-group">
@@ -295,8 +342,8 @@ const Calling: React.FC = () => {
                                 <label className="form-label">
                                     Počet hovorů v dávce
                                     <span style={{ fontWeight: 400, color: 'var(--gray-400)', marginLeft: 8, fontSize: 12 }}>
-                    (max {novyCount.toLocaleString('cs-CZ')})
-                  </span>
+                                        (max {novyCount.toLocaleString('cs-CZ')})
+                                    </span>
                                 </label>
                                 <input
                                     type="number"
@@ -314,12 +361,17 @@ const Calling: React.FC = () => {
                                 )}
                             </div>
 
-                            {/* Odhad času */}
+                            {/* ← UPRAVENO: Odhad času per worker */}
                             {avgDuration && novyCount > 0 && (
                                 <div className="alert alert-info">
                                     <div>
                                         <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                                            ⏱ Odhadovaný čas: {estimateTime(maxCalls)}
+                                            ⏱ Odhadovaný čas: {estimateTime(maxCalls, workers)}
+                                            {workers > 1 && (
+                                                <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 8, color: 'var(--primary)' }}>
+                                                    ({workers}× rychleji)
+                                                </span>
+                                            )}
                                         </div>
                                         <div style={{ fontSize: 12 }}>
                                             Průměrný hovor: {formatDuration(avgDuration.avgDuration)} + {avgDuration.overhead}s overhead
@@ -361,9 +413,14 @@ const Calling: React.FC = () => {
                                     <br />
                                     Počet hovorů: <strong>{maxCalls.toLocaleString('cs-CZ')}</strong>
                                     <br />
-                                    Volající číslo: <strong style={{ fontFamily: 'monospace' }}>{twilioNumber}</strong>
+                                    {/* ← UPRAVENO: workeři místo jednoho čísla */}
+                                    Workeři: <strong>{workers}×</strong>
+                                    {' '}
+                                    <span style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                                        ({WORKER_PHONES.slice(0, workers).join(', ')})
+                                    </span>
                                     <br />
-                                    Odhadovaný čas: <strong>{estimateTime(maxCalls)}</strong>
+                                    Odhadovaný čas: <strong>{estimateTime(maxCalls, workers)}</strong>
                                     <br /><br />
                                     Pro potvrzení zadej své heslo.
                                 </div>
@@ -406,7 +463,8 @@ const Calling: React.FC = () => {
                                         {reauthLoading ? (
                                             <><span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Spouštím...</>
                                         ) : (
-                                            `🚀 Spustit ${selectedAgent.name}`
+                                            // ← UPRAVENO: zobrazí počet workerů
+                                            `🚀 Spustit ${selectedAgent.name} (${workers} worker${workers > 1 ? 'y' : ''})`
                                         )}
                                     </button>
                                 </div>
@@ -429,20 +487,21 @@ const Calling: React.FC = () => {
                         fontWeight: 600,
                         marginBottom: 12,
                     }}>
-                        🤖 {selectedAgent.name} — „{selectedAgent.pitch.slice(0, 60)}..."
+                        {/* ← UPRAVENO: zobrazí počet workerů */}
+                        🤖 {selectedAgent.name} · {workers} worker{workers > 1 ? 'y' : ''} · „{selectedAgent.pitch.slice(0, 50)}..."
                     </div>
 
                     <div className="live-feed mb-16">
                         <span className="live-dot" />
                         {batchStatus.isRunning && batchStatus.currentCall ? (
                             <span>
-                Právě volám: <strong>{batchStatus.currentCall.phone}</strong>
+                                Právě volám: <strong>{batchStatus.currentCall.phone}</strong>
                                 {batchStatus.currentCall.companyName && (
                                     <span style={{ color: '#86efac', marginLeft: 8 }}>
-                    {batchStatus.currentCall.companyName}
-                  </span>
+                                        {batchStatus.currentCall.companyName}
+                                    </span>
                                 )}
-              </span>
+                            </span>
                         ) : (
                             <span style={{ color: '#fbbf24' }}>⏳ Připravuji další hovor...</span>
                         )}
@@ -453,19 +512,19 @@ const Calling: React.FC = () => {
                             <div className="flex justify-between items-center mb-8">
                                 <span style={{ fontWeight: 600 }}>Průběh dávky</span>
                                 <span style={{ fontSize: 13, color: 'var(--gray-500)' }}>
-                  {batchStatus.today.completed} hovorů dokončeno
-                </span>
+                                    {batchStatus.today.completed} hovorů dokončeno
+                                </span>
                             </div>
                             <div className="progress-wrapper">
                                 <div className="progress-bar" style={{ width: `${progressPercent()}%` }} />
                             </div>
                             <div className="flex justify-between items-center mt-8">
-                <span style={{ fontSize: 12, color: 'var(--gray-400)' }}>
-                  {progressPercent()}% dokončeno
-                </span>
+                                <span style={{ fontSize: 12, color: 'var(--gray-400)' }}>
+                                    {progressPercent()}% dokončeno
+                                </span>
                                 <span style={{ fontSize: 12, color: 'var(--gray-500)', fontWeight: 600 }}>
-                  Zbývá: {remainingTime()}
-                </span>
+                                    Zbývá: {remainingTime()}
+                                </span>
                             </div>
                         </div>
                     </div>
@@ -512,8 +571,8 @@ const Calling: React.FC = () => {
                         🎉 Dávka dokončena! Agent: <strong>{selectedAgent.name}</strong>
                         {startedAt && (
                             <span style={{ marginLeft: 8, fontSize: 13, opacity: 0.8 }}>
-                · Spuštěno: {startedAt.toLocaleTimeString('cs-CZ')}
-              </span>
+                                · Spuštěno: {startedAt.toLocaleTimeString('cs-CZ')}
+                            </span>
                         )}
                     </div>
 

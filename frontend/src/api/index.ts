@@ -140,10 +140,10 @@ export const retryUnanswered = (agentUserId?: string): Promise<{ updated: number
 export const getAvgDuration = (): Promise<AvgDuration> =>
     fetchJson('/ai-calls/avg-duration');
 
-export const startAICalling = (maxCalls: number, agentUserId: string): Promise<any> =>
+export const startAICalling = (maxCalls: number, agentUserId: string, workers: number = 1): Promise<any> =>
     fetchJson('/ai-calls/start', {
         method: 'POST',
-        body: JSON.stringify({ maxCalls, agentUserId }),
+        body: JSON.stringify({ maxCalls, agentUserId, workers }),
     });
 
 export const getAgents = (): Promise<{ users: Agent[] }> =>
