@@ -2,6 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getBatchHistory, BatchHistoryItem } from '../api';
 
+const AGENT_COLORS: Record<string, string> = {
+    '53c65ca7-68bc-4948-83e5-35a64c17f0fb': '#2563eb', // Eva V1 - modrá
+    'aeec78ff-a86b-4cab-b33a-adeb7c94f08e': '#7c3aed', // Eva V2 - fialová
+    'e7a469bb-4783-4f96-b961-03dd503e5bfa': '#059669', // Eva V3 - zelená
+    'f4adb349-70c3-4e63-8670-81f6c177f61d': '#d97706', // Eva V4 - oranžová
+};
+
 const BatchHistory: React.FC = () => {
     const [batches, setBatches] = useState<BatchHistoryItem[]>([]);
     const [loading, setLoading] = useState(true);
@@ -31,14 +38,10 @@ const BatchHistory: React.FC = () => {
     const formatDate = (dateStr: string): string => {
         const d = new Date(dateStr);
         return d.toLocaleDateString('cs-CZ', {
-            weekday: 'short',
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric',
+            weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric',
         });
     };
 
-    // 5 úrovní konverze — posunuté o -1
     const getConversionStyle = (rate: number): React.CSSProperties => {
         if (rate >= 6) return { background: '#14532d', color: '#fff' };
         if (rate >= 5) return { background: '#16a34a', color: '#fff' };
@@ -55,6 +58,7 @@ const BatchHistory: React.FC = () => {
         return '❌';
     };
 
+    // Celkové součty
     const totals = batches.reduce(
         (acc, b) => ({
             celkemHovoru: acc.celkemHovoru + b.celkemHovoru,
@@ -75,10 +79,11 @@ const BatchHistory: React.FC = () => {
             <div className="page-header">
                 <div>
                     <h1 className="page-title">Historie dávek</h1>
-                    <p className="page-subtitle">Posledních 30 dní · {batches.length} dávek</p>
+                    <p className="page-subtitle">Posledních 30 dní · {batches.length} dávek · všichni agenti</p>
                 </div>
             </div>
 
+            {/* SOUHRN */}
             {!loading && batches.length > 0 && (
                 <div className="stats-grid mb-24">
                     <div className="stat-card">
@@ -98,15 +103,12 @@ const BatchHistory: React.FC = () => {
                     <div className="stat-card">
                         <div className="stat-label">Prům. konverze</div>
                         <div style={{ marginTop: 6 }}>
-                            <span style={{
-                                ...getConversionStyle(totalConversion),
-                                padding: '4px 12px',
-                                borderRadius: 20,
-                                fontWeight: 700,
-                                fontSize: 22,
-                            }}>
-                                {totalConversion}% {getConversionLabel(totalConversion)}
-                            </span>
+              <span style={{
+                  ...getConversionStyle(totalConversion),
+                  padding: '4px 12px', borderRadius: 20, fontWeight: 700, fontSize: 22,
+              }}>
+                {totalConversion}% {getConversionLabel(totalConversion)}
+              </span>
                         </div>
                     </div>
                     <div className="stat-card">
@@ -120,6 +122,7 @@ const BatchHistory: React.FC = () => {
                 </div>
             )}
 
+            {/* LEGENDA konverze */}
             {!loading && batches.length > 0 && (
                 <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
                     <span style={{ fontSize: 12, color: 'var(--gray-500)', marginRight: 4 }}>Konverze:</span>
@@ -130,28 +133,20 @@ const BatchHistory: React.FC = () => {
                         { label: '≥3% ⚠️', rate: 3 },
                         { label: '<3% ❌', rate: 2 },
                     ].map((item) => (
-                        <span
-                            key={item.label}
-                            style={{
-                                ...getConversionStyle(item.rate),
-                                padding: '2px 8px',
-                                borderRadius: 12,
-                                fontSize: 11,
-                                fontWeight: 600,
-                            }}
-                        >
-                            {item.label}
-                        </span>
+                        <span key={item.label} style={{
+                            ...getConversionStyle(item.rate),
+                            padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 600,
+                        }}>
+              {item.label}
+            </span>
                     ))}
                 </div>
             )}
 
+            {/* TABULKA */}
             <div className="table-wrapper">
                 {loading ? (
-                    <div className="loading-spinner">
-                        <span className="spinner" />
-                        Načítám historii...
-                    </div>
+                    <div className="loading-spinner"><span className="spinner" />Načítám historii...</div>
                 ) : batches.length === 0 ? (
                     <div className="empty-state">
                         <div className="empty-state-icon">📭</div>
@@ -162,6 +157,7 @@ const BatchHistory: React.FC = () => {
                         <thead>
                         <tr>
                             <th>Datum</th>
+                            <th>Agent</th>
                             <th>Celkem hovorů</th>
                             <th>Zájem ✅</th>
                             <th>Nezvedl</th>
@@ -173,59 +169,50 @@ const BatchHistory: React.FC = () => {
                         </tr>
                         </thead>
                         <tbody>
-                        {batches.map((batch) => (
+                        {batches.map((batch, idx) => (
                             <tr
-                                key={batch.datum}
+                                key={`${batch.datum}-${(batch as any).agentId}-${idx}`}
                                 style={{ cursor: 'pointer' }}
-                                onClick={() => navigate(`/crm/history/${batch.datum}`)}
+                                onClick={() => navigate(`/crm/history/${batch.datum}?agentUserId=${(batch as any).agentId}`)}
                             >
-                                <td style={{ fontWeight: 600 }}>
-                                    {formatDate(batch.datum)}
-                                </td>
-                                <td style={{ fontWeight: 600 }}>
-                                    {batch.celkemHovoru.toLocaleString('cs-CZ')}
-                                </td>
+                                <td style={{ fontWeight: 600 }}>{formatDate(batch.datum)}</td>
                                 <td>
-                                        <span className="badge badge-success">
-                                            {batch.interested}
-                                        </span>
+                    <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '3px 10px',
+                        borderRadius: 20,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        background: `${AGENT_COLORS[(batch as any).agentId] || '#6b7280'}18`,
+                        color: AGENT_COLORS[(batch as any).agentId] || '#6b7280',
+                        border: `1px solid ${AGENT_COLORS[(batch as any).agentId] || '#6b7280'}40`,
+                    }}>
+                      🤖 {(batch as any).agentName || 'Neznámý agent'}
+                    </span>
                                 </td>
+                                <td style={{ fontWeight: 600 }}>{batch.celkemHovoru.toLocaleString('cs-CZ')}</td>
+                                <td><span className="badge badge-success">{batch.interested}</span></td>
+                                <td><span className="badge badge-warning">{batch.noAnswer}</span></td>
+                                <td><span className="badge badge-danger">{batch.rejected}</span></td>
+                                <td><span className="badge badge-gray">{batch.callback}</span></td>
                                 <td>
-                                        <span className="badge badge-warning">
-                                            {batch.noAnswer}
-                                        </span>
+                    <span style={{
+                        ...getConversionStyle(batch.conversionRate),
+                        padding: '3px 10px', borderRadius: 20, fontSize: 12,
+                        fontWeight: 700, display: 'inline-block',
+                    }}>
+                      {batch.conversionRate}% {getConversionLabel(batch.conversionRate)}
+                    </span>
                                 </td>
-                                <td>
-                                        <span className="badge badge-danger">
-                                            {batch.rejected}
-                                        </span>
-                                </td>
-                                <td>
-                                        <span className="badge badge-gray">
-                                            {batch.callback}
-                                        </span>
-                                </td>
-                                <td>
-                                        <span style={{
-                                            ...getConversionStyle(batch.conversionRate),
-                                            padding: '3px 10px',
-                                            borderRadius: 20,
-                                            fontSize: 12,
-                                            fontWeight: 700,
-                                            display: 'inline-block',
-                                        }}>
-                                            {batch.conversionRate}% {getConversionLabel(batch.conversionRate)}
-                                        </span>
-                                </td>
-                                <td className="td-muted">
-                                    {formatDuration(batch.avgDuration)}
-                                </td>
+                                <td className="td-muted">{formatDuration(batch.avgDuration)}</td>
                                 <td>
                                     <button
                                         className="btn btn-outline btn-sm"
                                         onClick={(e) => {
                                             e.stopPropagation();
-                                            navigate(`/crm/history/${batch.datum}`);
+                                            navigate(`/crm/history/${batch.datum}?agentUserId=${(batch as any).agentId}`);
                                         }}
                                     >
                                         → Detail

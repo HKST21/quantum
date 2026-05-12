@@ -138,15 +138,15 @@ export const getBatchResults = async (req: Request, res: Response, next: NextFun
 };
 
 // ============================================
-// GET /api/ai-calls/batch-history?agentUserId=
+// GET /api/ai-calls/batch-history — všichni agenti, per datum + agent
 // ============================================
-export const getBatchHistory = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const getBatchHistory = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        const agentId = getAgentId(req);
-
         const result = await pool.query(
             `SELECT
                 DATE(acl.created_at AT TIME ZONE 'Europe/Prague')               AS datum,
+                l.assigned_to                                                    AS agent_id,
+                u.full_name                                                      AS agent_name,
                 COUNT(*)                                                         AS celkem_hovoru,
                 COUNT(*) FILTER (WHERE acl.status = 'completed')                AS completed,
                 COUNT(*) FILTER (WHERE acl.outcome = 'CHCE_KONTAKT_AI')         AS interested,
@@ -160,16 +160,18 @@ export const getBatchHistory = async (req: Request, res: Response, next: NextFun
                 )                                                                AS conversion_rate
              FROM ai_call_logs acl
              JOIN leads l ON acl.lead_id = l.id
+             JOIN users u ON l.assigned_to = u.id
              WHERE acl.created_at >= NOW() - INTERVAL '30 days'
-             AND l.assigned_to = $1
-             GROUP BY DATE(acl.created_at AT TIME ZONE 'Europe/Prague')
-             ORDER BY datum DESC`,
-            [agentId]
+             AND u.email LIKE 'ai-agent%'
+             GROUP BY DATE(acl.created_at AT TIME ZONE 'Europe/Prague'), l.assigned_to, u.full_name
+             ORDER BY datum DESC, celkem_hovoru DESC`
         );
 
         res.status(200).json({
             batches: result.rows.map(row => ({
                 datum: row.datum,
+                agentId: row.agent_id,
+                agentName: row.agent_name,
                 celkemHovoru: parseInt(row.celkem_hovoru),
                 completed: parseInt(row.completed),
                 interested: parseInt(row.interested),
@@ -216,9 +218,7 @@ export const getUnanswered = async (req: Request, res: Response, next: NextFunct
                 )                               AS attempts_with_recording
              FROM leads l
              LEFT JOIN ai_call_logs acl ON l.id = acl.lead_id
-             WHERE
-                l.status = 'NEZVEDL_TELEFON'
-                AND l.assigned_to = $1
+             WHERE l.status = 'NEZVEDL_TELEFON' AND l.assigned_to = $1
              GROUP BY l.id, l.phone, l.company_name, l.status
              HAVING
                 COUNT(acl.recording_url) FILTER (
@@ -315,28 +315,24 @@ export const getAvgDuration = async (_req: Request, res: Response, next: NextFun
 
 // ============================================
 // POST /api/ai-calls/reassign-leads
-// Hromadné přeřazení NOVY leadů mezi agenty (od nejstarších)
 // ============================================
 export const reassignLeads = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         const { fromAgentId, toAgentId, count } = req.body;
 
         if (!fromAgentId || !toAgentId || !count) {
-            res.status(400).json({ error: { message: 'Chybí parametry: fromAgentId, toAgentId, count', statusCode: 400 } });
+            res.status(400).json({ error: { message: 'Chybí parametry', statusCode: 400 } });
             return;
         }
-
         if (fromAgentId === toAgentId) {
             res.status(400).json({ error: { message: 'Zdrojový a cílový agent musí být různí', statusCode: 400 } });
             return;
         }
-
         if (count < 1 || count > 10000) {
             res.status(400).json({ error: { message: 'Počet musí být mezi 1 a 10000', statusCode: 400 } });
             return;
         }
 
-        // Ověř že oba agenti existují
         const agentsCheck = await pool.query(
             `SELECT id, full_name FROM users WHERE id = ANY($1) AND is_active = true`,
             [[fromAgentId, toAgentId]]
@@ -347,7 +343,6 @@ export const reassignLeads = async (req: Request, res: Response, next: NextFunct
             return;
         }
 
-        // Přeřaď leady — nejstarší první (od spoda nahoru)
         const result = await pool.query(
             `UPDATE leads
              SET assigned_to = $1, updated_at = NOW()

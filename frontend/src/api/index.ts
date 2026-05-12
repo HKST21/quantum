@@ -73,8 +73,17 @@ export interface BatchStatus {
 }
 
 export interface BatchHistoryItem {
-    datum: string; celkemHovoru: number; completed: number; interested: number;
-    noAnswer: number; rejected: number; callback: number; avgDuration: number; conversionRate: number;
+    datum: string;
+    agentId: string;
+    agentName: string;
+    celkemHovoru: number;
+    completed: number;
+    interested: number;
+    noAnswer: number;
+    rejected: number;
+    callback: number;
+    avgDuration: number;
+    conversionRate: number;
 }
 
 export interface BatchResultLead {
@@ -105,10 +114,8 @@ export const getBatchResults = (date: string, agentUserId?: string): Promise<{ d
     return fetchJson(`/ai-calls/batch-results?date=${date}${query}`);
 };
 
-export const getBatchHistory = (agentUserId?: string): Promise<{ batches: BatchHistoryItem[] }> => {
-    const query = agentUserId ? `?agentUserId=${agentUserId}` : '';
-    return fetchJson(`/ai-calls/batch-history${query}`);
-};
+export const getBatchHistory = (): Promise<{ batches: BatchHistoryItem[] }> =>
+    fetchJson('/ai-calls/batch-history');
 
 export const getTwilioNumber = (): Promise<{ phone: string }> =>
     fetchJson('/ai-calls/twilio-number');
