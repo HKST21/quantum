@@ -1,11 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { getBatchResults, BatchResultLead } from '../api';
 import * as XLSX from 'xlsx';
+
+const AGENT_NAMES: Record<string, string> = {
+    '53c65ca7-68bc-4948-83e5-35a64c17f0fb': 'Eva V1',
+    'aeec78ff-a86b-4cab-b33a-adeb7c94f08e': 'Eva V2',
+    'e7a469bb-4783-4f96-b961-03dd503e5bfa': 'Eva V3',
+    'f4adb349-70c3-4e63-8670-81f6c177f61d': 'Eva V4',
+};
 
 const BatchDetail: React.FC = () => {
     const { date } = useParams<{ date: string }>();
     const navigate = useNavigate();
+    const location = useLocation();
+
+    // Načti agentUserId z URL query parametru
+    const agentUserId = new URLSearchParams(location.search).get('agentUserId') || '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
+    const agentName = AGENT_NAMES[agentUserId] || 'Neznámý agent';
+
     const [leads, setLeads] = useState<BatchResultLead[]>([]);
     const [loading, setLoading] = useState(true);
     const [playingUrl, setPlayingUrl] = useState<string | null>(null);
@@ -14,7 +27,7 @@ const BatchDetail: React.FC = () => {
         const load = async () => {
             if (!date) return;
             try {
-                const res = await getBatchResults(date);
+                const res = await getBatchResults(date, agentUserId);
                 setLeads(res.leads);
             } catch (err) {
                 console.error('Failed to load batch results:', err);
@@ -23,15 +36,12 @@ const BatchDetail: React.FC = () => {
             }
         };
         load();
-    }, [date]);
+    }, [date, agentUserId]);
 
     const formatDate = (dateStr: string): string => {
         const d = new Date(dateStr);
         return d.toLocaleDateString('cs-CZ', {
-            weekday: 'long',
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric',
+            weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric',
         });
     };
 
@@ -60,21 +70,14 @@ const BatchDetail: React.FC = () => {
         }));
 
         const ws = XLSX.utils.json_to_sheet(rows);
-
-        // Šířky sloupců
         ws['!cols'] = [
-            { wch: 18 },  // Telefon
-            { wch: 20 },  // Jméno
-            { wch: 25 },  // Firma
-            { wch: 10 },  // Délka
-            { wch: 40 },  // Poznámka
-            { wch: 60 },  // URL
-            { wch: 18 },  // Datum
+            { wch: 18 }, { wch: 20 }, { wch: 25 }, { wch: 10 },
+            { wch: 40 }, { wch: 60 }, { wch: 18 },
         ];
 
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, 'Zájemci');
-        XLSX.writeFile(wb, `quantum_zajemci_${date}.xlsx`);
+        XLSX.writeFile(wb, `quantum_zajemci_${date}_${agentName}.xlsx`);
     };
 
     return (
@@ -91,7 +94,7 @@ const BatchDetail: React.FC = () => {
                         Dávka: {date ? formatDate(date) : '—'}
                     </h1>
                     <p className="page-subtitle">
-                        {leads.length} zájemců (CHCE_KONTAKT_AI)
+                        {leads.length} zájemců (CHCE_KONTAKT_AI) · Agent: <strong>{agentName}</strong>
                     </p>
                 </div>
                 <button
@@ -160,26 +163,16 @@ const BatchDetail: React.FC = () => {
                         <tbody>
                         {leads.map((lead, idx) => (
                             <tr key={`${lead.telefon}-${idx}`}>
-                                <td className="td-muted" style={{ width: 40 }}>
-                                    {idx + 1}
-                                </td>
+                                <td className="td-muted" style={{ width: 40 }}>{idx + 1}</td>
                                 <td className="td-phone">{lead.telefon}</td>
                                 <td>
                                     {lead.firma && (
-                                        <div style={{ fontWeight: 600, fontSize: 13 }}>
-                                            {lead.firma}
-                                        </div>
+                                        <div style={{ fontWeight: 600, fontSize: 13 }}>{lead.firma}</div>
                                     )}
-                                    {lead.jmeno && (
-                                        <div className="td-muted">{lead.jmeno}</div>
-                                    )}
-                                    {!lead.firma && !lead.jmeno && (
-                                        <span className="td-muted">—</span>
-                                    )}
+                                    {lead.jmeno && <div className="td-muted">{lead.jmeno}</div>}
+                                    {!lead.firma && !lead.jmeno && <span className="td-muted">—</span>}
                                 </td>
-                                <td className="td-muted">
-                                    {formatDuration(lead.delka_sec)}
-                                </td>
+                                <td className="td-muted">{formatDuration(lead.delka_sec)}</td>
                                 <td>
                                     {lead.nahravka ? (
                                         <div className="audio-player">
@@ -208,12 +201,9 @@ const BatchDetail: React.FC = () => {
                                     {lead.poznamka_evy ? (
                                         <span
                                             style={{
-                                                fontSize: 12,
-                                                color: 'var(--gray-600)',
-                                                display: '-webkit-box',
-                                                WebkitLineClamp: 2,
-                                                WebkitBoxOrient: 'vertical',
-                                                overflow: 'hidden',
+                                                fontSize: 12, color: 'var(--gray-600)',
+                                                display: '-webkit-box', WebkitLineClamp: 2,
+                                                WebkitBoxOrient: 'vertical', overflow: 'hidden',
                                             }}
                                             title={lead.poznamka_evy}
                                         >
