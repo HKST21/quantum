@@ -25,29 +25,29 @@ const AGENTS: AgentOption[] = [
     {
         id: 'aeec78ff-a86b-4cab-b33a-adeb7c94f08e',
         name: 'Eva V2',
-        description: 'Neveřejné slevy — kontrola zdarma',
-        pitch: 'T-Mobile partner s neveřejnými slevami u telefonu, můžu Vám domluvit krátkou, nezávaznou kontrolu zdarma od našeho specialisty?',
+        description: 'Neveřejné slevy — kolega z masa a kostí',
+        pitch: 'T-Mobile partner u telefonu, volám kvůli neveřejným slevám. Můžu Vám domluvit krátký hovor s kolegou z masa a kostí?',
         successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
     },
     {
         id: 'e7a469bb-4783-4f96-b961-03dd503e5bfa',
         name: 'Eva V3',
-        description: 'Neveřejné slevy — krátký hovor',
+        description: 'Neveřejné slevy — krátký hovor se specialistou',
         pitch: 'T-Mobile partner s neveřejnými slevami u telefonu, můžu Vám domluvit krátký nezávazný hovor s naším specialistou?',
         successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
     },
     {
         id: 'f4adb349-70c3-4e63-8670-81f6c177f61d',
         name: 'Eva V4',
-        description: 'Šetříme 40% — krátký hovor',
-        pitch: 'T-Mobile partner u telefonu, šetřím svým klientům až 40% nákladů, můžu Vám domluvit krátký nezávazný hovor s naším specialistou?',
+        description: 'Neveřejné slevy — krátký hovor',
+        pitch: 'T-Mobile partner u telefonu, volám kvůli neveřejným slevám. Můžu Vám domluvit krátký hovor?',
         successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
     },
     {
         id: 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9',
         name: 'Eva V5',
-        description: 'Dvoustupňová kvalifikace (experiment)',
-        pitch: 'Volám z T-Mobile partner, platíte za svůj mobilní tarif s neomezenými daty víc jak 500Kč měsíčně? → [ANO] → Chcete, aby Vás nezávazně kontaktoval náš specialista s lepší cenou?',
+        description: 'Nový telefon téměř bez doplatku',
+        pitch: 'T-Mobile partner u telefonu, u některých čísel teď vychází nový telefon téměř bez doplatku. Můžu Vám nechat zavolat kolegu, aby ověřil, jestli se to týká i Vás?',
         successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
     },
 ];
@@ -212,8 +212,6 @@ const Calling: React.FC = () => {
         loadMeta(selectedAgent.id);
     };
 
-    const isV5 = selectedAgent.id === 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9';
-
     return (
         <div>
             <div className="page-header">
@@ -252,36 +250,18 @@ const Calling: React.FC = () => {
 
                             {/* Pitch preview */}
                             <div style={{
-                                background: isV5 ? '#fffbeb' : '#f8faff',
-                                border: `1px solid ${isV5 ? '#fde68a' : '#c7d7f9'}`,
+                                background: '#f8faff',
+                                border: '1px solid #c7d7f9',
                                 borderRadius: 'var(--radius)',
                                 padding: '12px 14px',
                                 marginBottom: 16,
                             }}>
-                                {isV5 && (
-                                    <div style={{ fontSize: 11, fontWeight: 600, color: '#d97706', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8 }}>
-                                        🧪 Experimentální — dvoustupňová kvalifikace
-                                    </div>
-                                )}
-                                <div style={{ fontSize: 11, fontWeight: 600, color: isV5 ? '#d97706' : 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>
-                                    🎙 {isV5 ? 'Otázka 1' : 'Pitch věta'}
+                                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>
+                                    🎙 Pitch věta
                                 </div>
                                 <div style={{ fontSize: 13, color: 'var(--gray-800)', lineHeight: 1.6, fontStyle: 'italic' }}>
-                                    {isV5
-                                        ? '„Volám z T-Mobile partner, platíte za svůj mobilní tarif s neomezenými daty víc jak 500Kč měsíčně?"'
-                                        : `„${selectedAgent.pitch}"`
-                                    }
+                                    „{selectedAgent.pitch}"
                                 </div>
-                                {isV5 && (
-                                    <>
-                                        <div style={{ fontSize: 11, fontWeight: 600, color: '#d97706', textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: 10, marginBottom: 6 }}>
-                                            🎙 Otázka 2 (pouze pokud ANO)
-                                        </div>
-                                        <div style={{ fontSize: 13, color: 'var(--gray-800)', lineHeight: 1.6, fontStyle: 'italic' }}>
-                                            „Chcete, aby Vás nezávazně kontaktoval náš specialista s lepší cenou?"
-                                        </div>
-                                    </>
-                                )}
                                 <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--success)', textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: 10, marginBottom: 6 }}>
                                     ✅ Při souhlasu
                                 </div>
@@ -500,16 +480,16 @@ const Calling: React.FC = () => {
             {step === 'calling' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div style={{
-                        background: isV5 ? '#fffbeb' : 'var(--primary-light)',
-                        border: `1px solid ${isV5 ? '#fde68a' : '#bfdbfe'}`,
+                        background: 'var(--primary-light)',
+                        border: '1px solid #bfdbfe',
                         borderRadius: 'var(--radius)',
                         padding: '8px 14px',
                         fontSize: 13,
-                        color: isV5 ? '#d97706' : 'var(--primary)',
+                        color: 'var(--primary)',
                         fontWeight: 600,
                         marginBottom: 12,
                     }}>
-                        {isV5 ? '🧪' : '🤖'} {selectedAgent.name} · {workers} worker{workers > 1 ? 'y' : ''} · {isV5 ? 'Dvoustupňová kvalifikace (experiment)' : `„${selectedAgent.pitch.slice(0, 50)}..."`}
+                        🤖 {selectedAgent.name} · {workers} worker{workers > 1 ? 'y' : ''} · „{selectedAgent.pitch.slice(0, 55)}..."
                     </div>
 
                     <div className="live-feed mb-16">
