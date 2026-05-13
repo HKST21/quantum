@@ -25,8 +25,8 @@ const AGENTS: AgentOption[] = [
     {
         id: 'aeec78ff-a86b-4cab-b33a-adeb7c94f08e',
         name: 'Eva V2',
-        description: 'Neveřejné slevy — kolega z masa a kostí',
-        pitch: 'T-Mobile partner u telefonu, volám kvůli neveřejným slevám. Můžu Vám domluvit krátký hovor s kolegou z masa a kostí?',
+        description: 'Nový telefon za nestandardně výhodných podmínek',
+        pitch: 'Dobrý den, T-Mobile partner u telefonu. Jen informativně — u některých čísel se teď dá získat nový telefon za nestandardně výhodných podmínek. Můžu Vám nechat ověřit možnosti?',
         successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
     },
     {
@@ -223,7 +223,6 @@ const Calling: React.FC = () => {
 
             {error && <div className="alert alert-danger mb-16">⚠️ {error}</div>}
 
-            {/* ── KROK 1: NASTAVENÍ ── */}
             {step === 'setup' && (
                 <div style={{ maxWidth: 580 }}>
                     <div className="card mb-16">
@@ -232,7 +231,6 @@ const Calling: React.FC = () => {
                         </div>
                         <div className="card-body">
 
-                            {/* Výběr agenta */}
                             <div className="form-group">
                                 <label className="form-label">AI Agent</label>
                                 <select
@@ -248,7 +246,6 @@ const Calling: React.FC = () => {
                                 </select>
                             </div>
 
-                            {/* Pitch preview */}
                             <div style={{
                                 background: '#f8faff',
                                 border: '1px solid #c7d7f9',
@@ -270,7 +267,6 @@ const Calling: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Výběr počtu workerů */}
                             <div className="form-group">
                                 <label className="form-label">
                                     Počet workerů (paralelní volání)
@@ -300,7 +296,6 @@ const Calling: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Telefonní číslo — skryjeme pokud workers > 1 */}
                             {workers === 1 && (
                                 <div className="form-group">
                                     <label className="form-label">Volající číslo</label>
@@ -319,7 +314,6 @@ const Calling: React.FC = () => {
                                 </div>
                             )}
 
-                            {/* Počet NOVY leadů */}
                             <div className="form-group">
                                 <label className="form-label">Dostupné leady ke kontaktování</label>
                                 {loadingMeta ? (
@@ -341,7 +335,6 @@ const Calling: React.FC = () => {
                                 )}
                             </div>
 
-                            {/* Počet hovorů */}
                             <div className="form-group">
                                 <label className="form-label">
                                     Počet hovorů v dávce
@@ -365,7 +358,6 @@ const Calling: React.FC = () => {
                                 )}
                             </div>
 
-                            {/* Odhad času */}
                             {avgDuration && novyCount > 0 && (
                                 <div className="alert alert-info">
                                     <div>
@@ -403,7 +395,6 @@ const Calling: React.FC = () => {
                 </div>
             )}
 
-            {/* ── KROK 2: RE-AUTH ── */}
             {step === 'reauth' && (
                 <div style={{ maxWidth: 460 }}>
                     <div className="card">
@@ -476,7 +467,6 @@ const Calling: React.FC = () => {
                 </div>
             )}
 
-            {/* ── KROK 3: PROBÍHÁ VOLÁNÍ ── */}
             {step === 'calling' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div style={{
@@ -565,7 +555,6 @@ const Calling: React.FC = () => {
                 </div>
             )}
 
-            {/* ── KROK 4: DOKONČENO ── */}
             {step === 'done' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div className="alert alert-success mb-24" style={{ fontSize: 16 }}>
