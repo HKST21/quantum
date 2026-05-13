@@ -9,6 +9,7 @@ const AGENTS = [
     { id: 'aeec78ff-a86b-4cab-b33a-adeb7c94f08e', name: 'Eva V2', description: 'Šetříme klientům až 40%' },
     { id: 'e7a469bb-4783-4f96-b961-03dd503e5bfa', name: 'Eva V3', description: 'Nepřeplácíte za služby?' },
     { id: 'f4adb349-70c3-4e63-8670-81f6c177f61d', name: 'Eva V4', description: 'Nezávazné porovnání' },
+    { id: 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9', name: 'Eva V5', description: 'Dvoustupňová kvalifikace' },
 ];
 
 const STATUS_LABELS: Record<string, { label: string; badge: string }> = {
