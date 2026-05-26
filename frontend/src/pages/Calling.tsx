@@ -11,6 +11,7 @@ interface AgentOption {
     name: string;
     description: string;
     pitch: string;
+    secondQuestion?: string;
     successLine: string;
 }
 
@@ -46,9 +47,10 @@ const AGENTS: AgentOption[] = [
     {
         id: 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9',
         name: 'Eva V5',
-        description: 'Nový telefon téměř bez doplatku',
-        pitch: 'T-Mobile partner u telefonu, u některých čísel teď vychází nový telefon téměř bez doplatku. Můžu Vám nechat zavolat kolegu, aby ověřil, jestli se to týká i Vás?',
-        successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
+        description: 'VIP ceník + počet čísel u operátora',
+        pitch: 'Volám z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?',
+        secondQuestion: 'Děkuji! Poslední dotaz, jaký počet telefonních čísel máte aktuálně u svého operátora?',
+        successLine: 'Děkuji za odpověď! Kolega se ozve v krátkém hovoru a připraví Vám ceník na míru. Hezký den!',
     },
 ];
 
@@ -235,6 +237,7 @@ const Calling: React.FC = () => {
                                 </select>
                             </div>
 
+                            {/* Pitch preview */}
                             <div style={{ background: '#f8faff', border: '1px solid #c7d7f9', borderRadius: 'var(--radius)', padding: '12px 14px', marginBottom: 16 }}>
                                 <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>
                                     🎙 Pitch věta
@@ -242,6 +245,16 @@ const Calling: React.FC = () => {
                                 <div style={{ fontSize: 13, color: 'var(--gray-800)', lineHeight: 1.6, fontStyle: 'italic' }}>
                                     „{selectedAgent.pitch}"
                                 </div>
+                                {selectedAgent.secondQuestion && (
+                                    <>
+                                        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: 10, marginBottom: 6 }}>
+                                            🎙 Po souhlasu
+                                        </div>
+                                        <div style={{ fontSize: 13, color: 'var(--gray-800)', lineHeight: 1.6, fontStyle: 'italic' }}>
+                                            „{selectedAgent.secondQuestion}"
+                                        </div>
+                                    </>
+                                )}
                                 <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--success)', textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: 10, marginBottom: 6 }}>
                                     ✅ Při souhlasu
                                 </div>
