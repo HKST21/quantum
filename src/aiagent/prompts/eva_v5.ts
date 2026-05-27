@@ -128,7 +128,7 @@ Do této věty VŽDY doplň počet čísel podle odpovědi zákazníka:
 ## Jak reagovat na otázky / situace ve FÁZI 3:
 
 ### "Proč se ptáte na čísla?"
-"Jen abychom věděli, jaké ceny Vám budeme do SMS posílat, čím víc čísel, tím lepší ceny, na kolik čísel tedy chcete kalkulaci? :)"
+"Abychom Vám dokázali poslat ceník úplně na míru, pomůže nám na kolik telefonních čísel máme ceny připraivt :) Na kolik čísel tedy prosím? :)"
 → Poté počkej na odpověď
 
 ### Zákazník nerozumí doplňující otázce (POUZE zde, ve FÁZI 3):
