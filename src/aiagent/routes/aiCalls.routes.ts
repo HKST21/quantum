@@ -2,7 +2,7 @@ import { Router } from 'express';
 import {
     startAICalling, stopAICalling, getAICallStatus,
     getAICallLogs, getAICallLogDetail,
-    getTwiML, handleStatusCallback, handleRecordingCallback,
+    getTwiML, handleStatusCallback, handleRecordingCallback, startOdorikTestCall
 } from '../controllers/aiCalls.controller';
 import { authenticate } from '../../middleware/authenticate';
 import { authorize } from '../../middleware/authorize';
@@ -20,5 +20,7 @@ router.get('/logs/:id', authenticate, authorize(['ADMIN']), getAICallLogDetail);
 router.post('/webhook/twiml', getTwiML);
 router.post('/webhook/status-callback', handleStatusCallback);
 router.post('/webhook/recording-callback', handleRecordingCallback);
+
+router.post('/test-odorik', authenticate, authorize(['ADMIN']), startOdorikTestCall);
 
 export default router;

@@ -306,4 +306,73 @@ export const handleRecordingCallback = async (req: Request, res: Response, _next
         console.error('❌ Recording callback error:', error);
         res.status(200).send('OK');
     }
+
+    // ============================================
+// POST /api/ai-calls/test-odorik
+// TESTOVACÍ endpoint pro ověření Twilio → Odorik BYOC pipeline
+// Vezme existující lead z DB a zavolá ho přes Odorik SIP trunk
+// From number = 266266095 (Hejdova pevná Odorik linka)
+// ============================================
+
+};
+
+// ============================================
+// POST /api/ai-calls/test-odorik
+// TESTOVACÍ endpoint pro ověření Twilio → Odorik BYOC pipeline
+// Vezme existující lead z DB a zavolá ho přes Odorik SIP trunk
+// From number = 266266095 (Hejdova pevná Odorik linka)
+// ============================================
+export const startOdorikTestCall = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { leadId } = req.body;
+
+        if (!leadId) {
+            throw new BadRequestError('leadId je povinný v request body');
+        }
+
+        const odorikNumber = process.env.ODORIK_PHONE_NUMBER;
+        if (!odorikNumber) {
+            throw new BadRequestError('ODORIK_PHONE_NUMBER není nakonfigurováno v ENV');
+        }
+
+        console.log(`🧪 Odorik test call requested by: ${req.user?.fullName}`);
+        console.log(`📞 Lead ID: ${leadId} | From: ${odorikNumber}`);
+
+        const activeAgentId = process.env.AI_AGENT_USER_ID || DEFAULT_AI_AGENT_ID;
+
+        const leadCheck = await pool.query(
+            `SELECT id, company_name, contact_person, phone
+             FROM leads
+             WHERE id = $1`,
+            [leadId]
+        );
+
+        if (leadCheck.rows.length === 0) {
+            throw new BadRequestError(`Lead ${leadId} nenalezen v DB`);
+        }
+
+        const lead = leadCheck.rows[0];
+
+        console.log(`🚀 [ODORIK TEST] Volám: ${lead.phone} přes ${odorikNumber}`);
+
+        setImmediate(async () => {
+            try {
+                await callOrchestrator.processLead(leadId, activeAgentId, odorikNumber);
+                console.log(`✅ [ODORIK TEST] Hovor dokončen pro lead ${leadId}`);
+            } catch (error) {
+                console.error(`❌ [ODORIK TEST] Chyba:`, error);
+            }
+        });
+
+        res.status(200).json({
+            success: true,
+            message: 'Odorik testovací hovor spuštěn',
+            leadId,
+            leadPhone: lead.phone,
+            fromNumber: odorikNumber,
+            agentId: activeAgentId,
+        });
+    } catch (error) {
+        next(error);
+    }
 };
