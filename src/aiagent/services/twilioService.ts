@@ -51,7 +51,8 @@ export class TwilioService {
                 leadId,
             });
 
-            const call = await this.client.calls.create({
+            // Base parametry pro Twilio call
+            const callParams: any = {
                 to: normalized,
                 from: callerNumber,
                 url: `${this.backendUrl}/api/ai-calls/webhook/twiml`,
@@ -62,7 +63,17 @@ export class TwilioService {
                 record: true,
                 recordingStatusCallback: `${this.backendUrl}/api/ai-calls/webhook/recording-callback`,
                 recordingStatusCallbackEvent: ['completed'],
-            });
+            };
+
+            // Pokud voláme z Odorik čísla, přidej BYOC trunk SID
+            const odorikNumber = process.env.ODORIK_PHONE_NUMBER;
+            const odorikTrunkSid = process.env.ODORIK_BYOC_TRUNK_SID;
+            if (odorikNumber && odorikTrunkSid && callerNumber === odorikNumber) {
+                console.log('🌐 Routing přes Odorik BYOC trunk:', odorikTrunkSid);
+                callParams.byoc = odorikTrunkSid;
+            }
+
+            const call = await this.client.calls.create(callParams);
 
             console.log('✅ Twilio call created:', {
                 callSid: call.sid,
