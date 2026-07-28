@@ -2,7 +2,7 @@ import { Router } from 'express';
 import {
     startAICalling, stopAICalling, getAICallStatus,
     getAICallLogs, getAICallLogDetail,
-    getTwiML, handleStatusCallback, handleRecordingCallback, startOdorikTestCall
+    getTwiML, handleStatusCallback, handleRecordingCallback, startOdorikTestCall, startOdorikCalling
 } from '../controllers/aiCalls.controller';
 import { authenticate } from '../../middleware/authenticate';
 import { authorize } from '../../middleware/authorize';
@@ -22,5 +22,8 @@ router.post('/webhook/status-callback', handleStatusCallback);
 router.post('/webhook/recording-callback', handleRecordingCallback);
 
 router.post('/test-odorik', authenticate, authorize(['ADMIN']), startOdorikTestCall);
+
+// PRODUKČNÍ Odorik paralelní volání
+router.post('/start-odorik-calling', authenticate, authorize(['ADMIN']), startOdorikCalling);
 
 export default router;

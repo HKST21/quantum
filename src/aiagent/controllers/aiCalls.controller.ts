@@ -3,6 +3,7 @@ import pool, { rowsToCamelCase } from '../../db/pool';
 import { callOrchestrator } from '../services/callOrchestrator';
 import { twilioService } from '../services/twilioService';
 import { BadRequestError, NotFoundError } from '../../utils/errors';
+import { odorikService } from '../services/odorikService';
 import {
     StartAICallingRequest, StartAICallingResponse, StopAICallingResponse,
     AICallStatusResponse, AICallLog, AICallLogsQuery, AICallLogsResponse,
@@ -371,6 +372,186 @@ export const startOdorikTestCall = async (req: Request, res: Response, next: Nex
             leadPhone: lead.phone,
             fromNumber: odorikNumber,
             agentId: activeAgentId,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================================================
+// SNIPPET pro aiCalls.controller.ts
+// ============================================================================
+//
+// Vlož tento kód do aiCalls.controller.ts:
+//
+// 1. Nahoře v souboru přidej import:
+//    import { odorikService } from '../services/odorikService';
+//
+// 2. Za funkci startOdorikTestCall vlož novou funkci startOdorikCalling
+//    (viz níže).
+//
+// 3. V routes souboru přidej novou route (viz aiCalls.routes.ts snippet).
+//
+// ============================================================================
+
+// ============================================
+// POST /api/ai-calls/start-odorik-calling
+// PRODUKČNÍ endpoint pro paralelní volání přes Odorik SIP jména.
+//
+// Flow per hovor:
+//   1. Worker si vezme lead z fronty
+//   2. Odorik API: nastav přesměrování SIP jména na lead.phone (s prefixem *087)
+//   3. Twilio API: zavolej na sip:SIP_JMENO@sip.odorik.cz s from = Odorik pevná
+//   4. Odorik: přijme SIP INVITE, přesměruje na lead.phone s CLIP 703614594
+//   5. Klient vidí mobilní 703614594 → zvedne → Eva mluví
+//
+// Worker mapping:
+//   Worker 1 = ODORIK_SIP_NAME_1 (např. hejda_test1)
+//   Worker 2 = ODORIK_SIP_NAME_2 (např. hejda_test2)
+//   → Jeden worker = jedno SIP jméno = sériové zpracování (bez race condition)
+// ============================================
+export const startOdorikCalling = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const {
+            leadIds,
+            maxCalls = 50,
+            agentUserId,
+            workers = 1,
+        } = req.body as StartAICallingRequest & { agentUserId?: string; workers?: number };
+
+        const activeAgentId = agentUserId || process.env.AI_AGENT_USER_ID || DEFAULT_AI_AGENT_ID;
+
+        console.log(`🚀 Odorik AI Calling start requested by: ${req.user?.fullName} | Agent: ${activeAgentId}`);
+        console.log('📋 Parameters:', { leadIds, maxCalls, agentUserId: activeAgentId, workers });
+
+        // Ověř agenta
+        const agentCheck = await pool.query(
+            `SELECT id, full_name FROM users WHERE id = $1 AND is_active = true`,
+            [activeAgentId]
+        );
+        if (agentCheck.rows.length === 0) throw new BadRequestError(`Agent ${activeAgentId} nenalezen`);
+
+        // Načti Odorik SIP jména z ENV (ODORIK_SIP_NAME_1, ODORIK_SIP_NAME_2, ...)
+        const sipNames: string[] = [];
+        let i = 1;
+        while (true) {
+            const name = process.env[`ODORIK_SIP_NAME_${i}`];
+            if (!name) break;
+            sipNames.push(name);
+            i++;
+        }
+
+        if (sipNames.length === 0) {
+            throw new BadRequestError('Žádná ODORIK_SIP_NAME_X jména nejsou nakonfigurována');
+        }
+
+        // Ověř Odorik pevnou linku
+        const odorikNumber = process.env.ODORIK_PHONE_NUMBER;
+        if (!odorikNumber) {
+            throw new BadRequestError('ODORIK_PHONE_NUMBER není nakonfigurováno');
+        }
+
+        // Počet workerů max = počet SIP jmen
+        const actualWorkers = Math.min(Math.max(1, workers), sipNames.length);
+        if (actualWorkers < workers) {
+            console.warn(`⚠️ Požadováno ${workers} workerů ale máme ${sipNames.length} SIP jmen → spouštíme ${actualWorkers}`);
+        }
+
+        console.log(`📞 Worker SIP jména (${actualWorkers}):`, sipNames.slice(0, actualWorkers));
+
+        // Načti leady
+        let leads;
+        if (leadIds && leadIds.length > 0) {
+            const result = await pool.query(
+                `SELECT id, company_name, contact_person, phone
+                 FROM leads
+                 WHERE id = ANY($1) AND status = 'NOVY' AND assigned_to = $2`,
+                [leadIds, activeAgentId]
+            );
+            leads = result.rows;
+        } else {
+            leads = await callOrchestrator.getLeadsForCalling(activeAgentId, maxCalls);
+        }
+
+        if (leads.length === 0) throw new BadRequestError('Žádné leady k volání');
+
+        console.log(`✅ Found ${leads.length} leads to call (${actualWorkers} workers)`);
+
+        // Rozděl leady mezi workery (round-robin)
+        const workerLeads: any[][] = Array.from({ length: actualWorkers }, () => []);
+        leads.forEach((lead: any, index: number) => {
+            workerLeads[index % actualWorkers].push(lead);
+        });
+
+        workerLeads.forEach((chunk, i) => {
+            console.log(`👷 Worker ${i + 1} (${sipNames[i]}): ${chunk.length} leadů`);
+        });
+
+        // Spusť paralelní workery
+        setImmediate(async () => {
+            console.log(`🎯 Starting ${actualWorkers} parallel Odorik workers...`);
+
+            const workerPromises = workerLeads.map((chunk, workerIndex) => {
+                const sipName = sipNames[workerIndex];
+                const sipUri = `sip:${sipName}@sip.odorik.cz`;
+
+                return (async () => {
+                    console.log(`🟢 Odorik Worker ${workerIndex + 1} (${sipName}) started with ${chunk.length} leads`);
+
+                    for (const lead of chunk) {
+                        try {
+                            console.log(`📞 [Odorik Worker ${workerIndex + 1}] Processing lead ${lead.id} (${lead.phone})...`);
+
+                            // KROK 1: Nastavit Odorik přesměrování
+                            console.log(`📡 [Worker ${workerIndex + 1}] Setting Odorik forward: ${sipName} → ${lead.phone}`);
+                            await odorikService.setForward(sipName, lead.phone);
+
+                            // KROK 2: Zavolat přes Twilio na SIP URI
+                            // Trik: processLead používá lead.phone, takže dočasně přepíšeme na SIP URI
+                            const originalPhone = lead.phone;
+                            await pool.query(
+                                `UPDATE leads SET phone = $1 WHERE id = $2`,
+                                [sipUri, lead.id]
+                            );
+
+                            try {
+                                await callOrchestrator.processLead(lead.id, activeAgentId, odorikNumber);
+                            } finally {
+                                // Vrátit původní číslo do DB
+                                await pool.query(
+                                    `UPDATE leads SET phone = $1 WHERE id = $2`,
+                                    [originalPhone, lead.id]
+                                );
+                            }
+
+                            console.log(`✅ [Odorik Worker ${workerIndex + 1}] Done: ${lead.id}`);
+                        } catch (error) {
+                            console.error(`❌ [Odorik Worker ${workerIndex + 1}] Failed: ${lead.id}:`, error);
+                        }
+                    }
+
+                    console.log(`🏁 Odorik Worker ${workerIndex + 1} (${sipName}) finished`);
+                })();
+            });
+
+            await Promise.all(workerPromises);
+            console.log('🎉 All Odorik workers completed!');
+        });
+
+        res.status(200).json({
+            success: true,
+            message: `Odorik calling started: ${actualWorkers} workerů, ${leads.length} leadů`,
+            queuedLeads: leads.length,
+            aiAgentId: activeAgentId,
+            agentName: agentCheck.rows[0].full_name,
+            workers: actualWorkers,
+            sipNames: sipNames.slice(0, actualWorkers),
+            odorikPhoneNumber: odorikNumber,
+            leadsPerWorker: workerLeads.map((chunk, i) => ({
+                worker: i + 1,
+                sipName: sipNames[i],
+                leads: chunk.length,
+            })),
         });
     } catch (error) {
         next(error);

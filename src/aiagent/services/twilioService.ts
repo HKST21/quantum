@@ -6,34 +6,18 @@ import { normalizePhoneNumber } from '../utils/phoneUtils';
 // TWILIO SERVICE - QUANTUM CRM
 // ============================================================================
 //
-// Standardní flow:
-//   Backend → Twilio API (client.calls.create) → PSTN → klient
+// Podporované flow:
 //
-// Odorik BYOC flow (aktivní když from = ODORIK_PHONE_NUMBER):
-//   Backend → Twilio API s byoc parametrem → SIP INVITE na sip.odorik.cz
-//   → Odorik proxy → PSTN → klient (klient vidí Odorik CLIP)
+// 1. Standardní PSTN flow:
+//    Backend → Twilio API (client.calls.create) → Twilio PSTN → klient
+//    Používá se když leadPhone je běžné E.164 číslo a from je Twilio číslo.
 //
-// ============================================================================
-// !!! ODORIK SIP JMÉNO TEST !!!
-// ============================================================================
-// AKTIVNÍ TESTOVACÍ CESTA - odstraň po dokončení testu s Petrem Soukupem.
+// 2. Odorik BYOC flow (mobilní CLIP):
+//    Backend → Odorik API (setForward na SIP jméno) → Twilio API s SIP URI
+//    → Twilio BYOC trunk → Odorik SIP proxy → PSTN → klient
+//    Používá se když leadPhone je SIP URI (sip:hejda_prod1@sip.odorik.cz)
+//    a from je Odorik pevná linka (ODORIK_PHONE_NUMBER).
 //
-// Dočasně přidán support pro SIP URI destinace (např. sip:hejda_test1@sip.odorik.cz).
-// Účel: Otestovat Twilio → Odorik napojení přes SIP jméno místo přímého volání
-// na telefonní číslo. Petr Soukup vytvořil SIP jméno "hejda_test1" na Odorik
-// straně s přesměrováním na jeho vlastní mobil, aby si mohl osobně ověřit funkci.
-//
-// Jak funguje: když leadPhone v DB začíná "sip:", přeskočí se normalizace
-// telefonního čísla a URI se pošle přímo do Twilio API jako "to" parametr.
-// Twilio SIP URI destinace nativně podporuje (viz twilio.com/docs/voice/api/sip-making-calls).
-//
-// PO ODSTRANĚNÍ TESTU:
-//   1. Smaž blok mezi "ODORIK SIP TEST START" a "ODORIK SIP TEST END"
-//   2. Vrať do metody initiateCall původní řádky:
-//        const { normalized, isValid } = normalizePhoneNumber(leadPhone);
-//        if (!isValid) throw new Error(`Invalid phone number format: ${leadPhone}`);
-//   3. V callParams změň to: destinationUri zpět na to: normalized
-//   4. Smaž test leady s "sip:" phone hodnotou z DB
 // ============================================================================
 
 export class TwilioService {
@@ -61,7 +45,7 @@ export class TwilioService {
 
     /**
      * Initiate outbound call
-     * @param leadPhone - Cílové číslo (E.164 formát) NEBO SIP URI (test režim)
+     * @param leadPhone - Cílové číslo (E.164 formát) NEBO SIP URI (Odorik flow)
      * @param leadId - UUID leadu v DB
      * @param fromNumber - Volitelné číslo volajícího, jinak fallback na TWILIO_PHONE_NUMBER
      */
@@ -71,23 +55,16 @@ export class TwilioService {
         fromNumber?: string
     ): Promise<TwilioCallResponse> {
         try {
-            // =====================================================
-            // ODORIK SIP TEST START - odstraň po testu
-            // =====================================================
-            // Podpora SIP URI destinace (test s Petrem přes hejda_test1@sip.odorik.cz).
-            // Když leadPhone začíná "sip:", přeskočíme normalizaci a použijeme URI přímo.
+            // Podpora SIP URI destinace (Odorik flow) nebo E.164 čísla (standardní flow)
             let destinationUri: string;
             if (leadPhone.startsWith('sip:')) {
                 destinationUri = leadPhone;
-                console.log('🧪 [ODORIK SIP TEST] Using SIP URI directly:', destinationUri);
+                console.log('🌐 Using SIP URI destination (Odorik flow):', destinationUri);
             } else {
                 const { normalized, isValid } = normalizePhoneNumber(leadPhone);
                 if (!isValid) throw new Error(`Invalid phone number format: ${leadPhone}`);
                 destinationUri = normalized;
             }
-            // =====================================================
-            // ODORIK SIP TEST END
-            // =====================================================
 
             // Použij předané číslo nebo fallback na ENV
             const callerNumber = fromNumber || this.defaultPhoneNumber;
