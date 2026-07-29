@@ -11,10 +11,11 @@ import axios, { AxiosError } from 'axios';
 //
 // Flow:
 //   1. Backend zavolá setForward('hejda_test1', '+420703034160')
-//   2. Odorik API nastaví: sip:hejda_test1@sip.odorik.cz → přesměruj na *087+420703034160
-//      (prefix *087 zajistí přenos správného CLIP = Hejdovo mobilní 703614594)
-//   3. Backend zavolá Twilio: client.calls.create({ to: 'sip:hejda_test1@sip.odorik.cz' })
-//   4. Odorik přijme INVITE na SIP jméno, přesměruje na cílové číslo s správným CLIP
+//   2. Odorik API: DELETE všech existujících routes na SIP jménu
+//   3. Odorik API: POST nový route → sip:hejda_test1@sip.odorik.cz přesměruj na
+//      *08700420703034160 (prefix *087 + 00420 formát zajistí správný CLIP)
+//   4. Backend zavolá Twilio: client.calls.create({ to: 'sip:hejda_test1@sip.odorik.cz' })
+//   5. Odorik přijme INVITE na SIP jméno, přesměruje na cílové číslo s CLIPem
 //
 // Autentizace: HTTP Basic Auth (API user + heslo z ENV proměnných)
 // Dokumentace: https://www.odorik.cz/w/api:public_numbers
@@ -41,22 +42,24 @@ export class OdorikService {
      * Konvertuje český telefonní číslo do Odorik formátu s prefixem *087.
      *
      * Vstup: '+420703034160' nebo '00420703034160' nebo '703034160'
-     * Výstup: '*087+420703034160' (prefix *087 zajistí přenos CLIP)
+     * Výstup: '*08700420703034160' (prefix *087 + mezinárodní formát BEZ +)
      *
      * Petr Soukup: "Aby se přeneslo správně číslo volajícího, tak volané číslo
-     * vkládejte s prefixem *087cislo. Tím se převezme id volající linky."
+     * vkládejte s prefixem *087cislo. Doporučuji přesměrovat na *08700420737007770
+     * nebo *087737007770 nikoli na variantu s + ta nevím jestli je ošetřená."
      */
     private formatRingingNumber(phoneNumber: string): string {
-        // Odstraníme mezery a pomlčky
-        let cleaned = phoneNumber.replace(/[\s\-()]/g, '');
+        // Odstraníme mezery, pomlčky a všechny + znaky
+        let cleaned = phoneNumber.replace(/[\s\-()+ ]/g, '');
 
-        // Normalizace na +420 formát
-        if (cleaned.startsWith('00420')) {
-            cleaned = '+' + cleaned.slice(2);
-        } else if (cleaned.startsWith('420') && !cleaned.startsWith('+420')) {
-            cleaned = '+' + cleaned;
+        // Normalizace na 00420 formát (bez + na začátku)
+        if (cleaned.startsWith('420')) {
+            cleaned = '00' + cleaned; // 420... → 00420...
         } else if (cleaned.match(/^\d{9}$/)) {
-            cleaned = '+420' + cleaned;
+            cleaned = '00420' + cleaned; // 9 číslic → 00420 + číslo
+        } else if (!cleaned.startsWith('00')) {
+            // Pokud nezačíná ani 420 ani 00, přidáme 00420 (fallback pro české čísla)
+            cleaned = '00420' + cleaned;
         }
 
         return `*087${cleaned}`;
@@ -65,19 +68,92 @@ export class OdorikService {
     /**
      * Konvertuje SIP jméno do Odorik "veřejného čísla" formátu pro API.
      * SIP jména se pro API používají stejně jako veřejná telefonní čísla.
-     *
-     * Vstup: 'hejda_test1'
-     * Výstup: 'hejda_test1' (pro SIP jména není potřeba prefix 00420)
      */
     private formatPublicNumber(sipName: string): string {
         return sipName;
     }
 
     /**
+     * Získá aktuální seznam routes pro SIP jméno.
+     */
+    async getRoutes(sipName: string): Promise<any[]> {
+        if (!this.apiUser || !this.apiPassword) {
+            throw new Error('Odorik API credentials not configured');
+        }
+
+        const publicNumber = this.formatPublicNumber(sipName);
+        const url = `${ODORIK_API_BASE_URL}/public_numbers/${publicNumber}/routes.json`;
+
+        try {
+            const response = await axios.get(url, {
+                auth: { username: this.apiUser, password: this.apiPassword },
+                timeout: 10000,
+            });
+
+            return response.data || [];
+        } catch (error) {
+            const axiosError = error as AxiosError;
+            console.error(`❌ Odorik getRoutes failed for ${sipName}:`, axiosError.message);
+            throw new Error(`Odorik API error: ${axiosError.message}`);
+        }
+    }
+
+    /**
+     * Smaže konkrétní route podle ID.
+     */
+    async deleteRoute(sipName: string, routeId: number | string): Promise<boolean> {
+        if (!this.apiUser || !this.apiPassword) {
+            throw new Error('Odorik API credentials not configured');
+        }
+
+        const publicNumber = this.formatPublicNumber(sipName);
+        const url = `${ODORIK_API_BASE_URL}/public_numbers/${publicNumber}/routes/${routeId}.json`;
+
+        try {
+            await axios.delete(url, {
+                auth: { username: this.apiUser, password: this.apiPassword },
+                timeout: 10000,
+            });
+
+            console.log(`🗑️ Odorik route deleted: ${sipName}/${routeId}`);
+            return true;
+        } catch (error) {
+            const axiosError = error as AxiosError;
+            console.error(`❌ Odorik deleteRoute failed for ${sipName}/${routeId}:`, axiosError.message);
+            return false; // Nechceme aby jednorázová chyba shodila celý flow
+        }
+    }
+
+    /**
+     * Smaže VŠECHNY existující routes na SIP jménu.
+     * Volá se před přidáním nového route, aby se předešlo paralelnímu zvonění
+     * na stará čísla (Petrovo číslo z předchozích testů apod.).
+     */
+    async deleteAllRoutes(sipName: string): Promise<void> {
+        try {
+            const routes = await this.getRoutes(sipName);
+
+            if (routes.length === 0) {
+                console.log(`ℹ️ No existing routes on ${sipName} to delete`);
+                return;
+            }
+
+            console.log(`🧹 Cleaning up ${routes.length} existing routes on ${sipName}`);
+
+            for (const route of routes) {
+                if (route.id) {
+                    await this.deleteRoute(sipName, route.id);
+                }
+            }
+        } catch (error) {
+            console.error(`⚠️ deleteAllRoutes error for ${sipName}:`, error);
+            // Pokračujeme - pokud DELETE selže, POST route stále přidá nový
+        }
+    }
+
+    /**
      * Nastaví dynamické přesměrování SIP jména na cílové telefonní číslo.
-     * Použije parametr replace_by_source_number=true → Odorik automaticky
-     * odstraní všechna předchozí přesměrování se source_number="*", takže
-     * není potřeba nejdřív dělat DELETE.
+     * Nejdřív smaže všechny existující routes, pak přidá nový.
      *
      * @param sipName - Odorik SIP jméno (např. 'hejda_test1')
      * @param targetPhone - Cílové telefonní číslo klienta (např. '+420703034160')
@@ -88,6 +164,10 @@ export class OdorikService {
             throw new Error('Odorik API credentials not configured');
         }
 
+        // KROK 1: Smaž všechny existující routes (Petrovo přesměrování atd.)
+        await this.deleteAllRoutes(sipName);
+
+        // KROK 2: Přidej nový route na cílové číslo
         const publicNumber = this.formatPublicNumber(sipName);
         const ringingNumber = this.formatRingingNumber(targetPhone);
 
@@ -101,7 +181,6 @@ export class OdorikService {
                 new URLSearchParams({
                     source_number: '*',
                     ringing_number: ringingNumber,
-                    replace_by_source_number: 'true',
                 }).toString(),
                 {
                     auth: {
@@ -127,34 +206,6 @@ export class OdorikService {
                 data: axiosError.response?.data,
                 message: axiosError.message,
             });
-            throw new Error(`Odorik API error: ${axiosError.message}`);
-        }
-    }
-
-    /**
-     * Získá aktuální seznam přesměrování pro SIP jméno (debug/monitoring).
-     */
-    async getRoutes(sipName: string): Promise<any[]> {
-        if (!this.apiUser || !this.apiPassword) {
-            throw new Error('Odorik API credentials not configured');
-        }
-
-        const publicNumber = this.formatPublicNumber(sipName);
-        const url = `${ODORIK_API_BASE_URL}/public_numbers/${publicNumber}/routes.json`;
-
-        try {
-            const response = await axios.get(url, {
-                auth: {
-                    username: this.apiUser,
-                    password: this.apiPassword,
-                },
-                timeout: 10000,
-            });
-
-            return response.data || [];
-        } catch (error) {
-            const axiosError = error as AxiosError;
-            console.error(`❌ Odorik getRoutes failed for ${sipName}:`, axiosError.message);
             throw new Error(`Odorik API error: ${axiosError.message}`);
         }
     }
