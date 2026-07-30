@@ -813,22 +813,19 @@ audio {
 .w-full { width: 100%; }
 
 /* ============================================================================
-   NOTIFICATION BELL + MAIN HEADER
-   Přidat NA KONEC souboru src/styles/global.css.
-   Nemění žádné existující styly.
+   NOTIFICATION BELL + MAIN HEADER (v2 - floating, netlačí obsah dolů)
+   Nahradit v src/styles/global.css sekci s .main-header (v1) tímto blokem.
    ============================================================================ */
 
-/* Top header nad main-content */
+/* Header je absolutně pozicovaný v rohu, nezabírá místo v layoutu */
 .main-header {
+    position: absolute;
+    top: 16px;
+    right: 24px;
+    z-index: 50;
     display: flex;
     justify-content: flex-end;
     align-items: center;
-    padding: 12px 24px;
-    background: #fff;
-    border-bottom: 1px solid var(--gray-200, #e5e7eb);
-    position: sticky;
-    top: 0;
-    z-index: 50;
 }
 
 .main-header-right {
@@ -844,20 +841,22 @@ audio {
 
 /* Bell button */
 .notification-bell {
-    background: transparent;
-    border: none;
+    background: white;
+    border: 1px solid var(--gray-200, #e5e7eb);
     cursor: pointer;
     padding: 8px;
     border-radius: 8px;
     position: relative;
-    transition: background 0.15s;
+    transition: all 0.15s;
     display: flex;
     align-items: center;
     justify-content: center;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
 }
 
 .notification-bell:hover {
-    background: var(--gray-100, #f3f4f6);
+    background: var(--gray-50, #f9fafb);
+    border-color: var(--gray-300, #d1d5db);
 }
 
 .notification-bell .bell-icon {
@@ -885,8 +884,8 @@ audio {
 /* Badge s počtem */
 .bell-badge {
     position: absolute;
-    top: 2px;
-    right: 2px;
+    top: -4px;
+    right: -4px;
     background: #dc2626;
     color: white;
     border-radius: 10px;

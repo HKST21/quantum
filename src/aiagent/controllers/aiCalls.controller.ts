@@ -410,6 +410,19 @@ export const startOdorikTestCall = async (req: Request, res: Response, next: Nex
 //   Worker 2 = ODORIK_SIP_NAME_2 (např. hejda_test2)
 //   → Jeden worker = jedno SIP jméno = sériové zpracování (bez race condition)
 // ============================================
+// ============================================================================
+// SNIPPET pro aiCalls.controller.ts
+// ============================================================================
+// Nahraď existující funkci startOdorikCalling touto verzí.
+// Přidává podporu:
+//   - batchName (zobrazí se v Render logs pro identifikaci kampaně)
+//   - agentUserId (výběr agenta Eva v1-v5 jako u Twilio)
+//   - statusFilter (NOVY / NEZVEDL_TELEFON) - respektuje volbu z Dashboardu
+//
+// Ostatní parametry (minCallInterval, retryDelay atd.) se přijímají ale
+// v Odorik cestě nejsou aktivní (UI je má disabled).
+// ============================================================================
+
 export const startOdorikCalling = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         const {
@@ -417,12 +430,20 @@ export const startOdorikCalling = async (req: Request, res: Response, next: Next
             maxCalls = 50,
             agentUserId,
             workers = 1,
-        } = req.body as StartAICallingRequest & { agentUserId?: string; workers?: number };
+            batchName,
+            statusFilter = 'NOVY',
+        } = req.body as StartAICallingRequest & {
+            agentUserId?: string;
+            workers?: number;
+            batchName?: string;
+            statusFilter?: 'NOVY' | 'NEZVEDL_TELEFON';
+        };
 
         const activeAgentId = agentUserId || process.env.AI_AGENT_USER_ID || DEFAULT_AI_AGENT_ID;
+        const displayBatchName = batchName || `Odorik ${new Date().toLocaleString('cs-CZ')}`;
 
-        console.log(`🚀 Odorik AI Calling start requested by: ${req.user?.fullName} | Agent: ${activeAgentId}`);
-        console.log('📋 Parameters:', { leadIds, maxCalls, agentUserId: activeAgentId, workers });
+        console.log(`🚀 Odorik AI Calling: "${displayBatchName}" | Agent: ${activeAgentId} | Filter: ${statusFilter}`);
+        console.log('📋 Parameters:', { leadIds: leadIds?.length || 'auto', maxCalls, agentUserId: activeAgentId, workers, batchName: displayBatchName });
 
         // Ověř agenta
         const agentCheck = await pool.query(
@@ -445,7 +466,7 @@ export const startOdorikCalling = async (req: Request, res: Response, next: Next
             throw new BadRequestError('Žádná ODORIK_SIP_NAME_X jména nejsou nakonfigurována');
         }
 
-        // Ověř Odorik pevnou linku
+        // Ověř Odorik pevnou linku (from number)
         const odorikNumber = process.env.ODORIK_PHONE_NUMBER;
         if (!odorikNumber) {
             throw new BadRequestError('ODORIK_PHONE_NUMBER není nakonfigurováno');
@@ -459,23 +480,36 @@ export const startOdorikCalling = async (req: Request, res: Response, next: Next
 
         console.log(`📞 Worker SIP jména (${actualWorkers}):`, sipNames.slice(0, actualWorkers));
 
-        // Načti leady
+        // Načti leady - respektuj statusFilter jako u Twilio
         let leads;
         if (leadIds && leadIds.length > 0) {
             const result = await pool.query(
                 `SELECT id, company_name, contact_person, phone
                  FROM leads
-                 WHERE id = ANY($1) AND status = 'NOVY' AND assigned_to = $2`,
-                [leadIds, activeAgentId]
+                 WHERE id = ANY($1) AND status = $2 AND assigned_to = $3`,
+                [leadIds, statusFilter, activeAgentId]
             );
             leads = result.rows;
         } else {
-            leads = await callOrchestrator.getLeadsForCalling(activeAgentId, maxCalls);
+            // Použij statusFilter při hledání leadů
+            const result = await pool.query(
+                `SELECT id, company_name, contact_person, phone
+                 FROM leads
+                 WHERE status = $1 
+                   AND assigned_to = $2
+                   AND (blacklisted IS NULL OR blacklisted = false)
+                 ORDER BY created_at ASC
+                 LIMIT $3`,
+                [statusFilter, activeAgentId, maxCalls]
+            );
+            leads = result.rows;
         }
 
-        if (leads.length === 0) throw new BadRequestError('Žádné leady k volání');
+        if (leads.length === 0) {
+            throw new BadRequestError(`Žádné leady k volání (status: ${statusFilter})`);
+        }
 
-        console.log(`✅ Found ${leads.length} leads to call (${actualWorkers} workers)`);
+        console.log(`✅ Found ${leads.length} leads to call (${actualWorkers} workers, batch: "${displayBatchName}")`);
 
         // Rozděl leady mezi workery (round-robin)
         const workerLeads: any[][] = Array.from({ length: actualWorkers }, () => []);
@@ -489,7 +523,7 @@ export const startOdorikCalling = async (req: Request, res: Response, next: Next
 
         // Spusť paralelní workery
         setImmediate(async () => {
-            console.log(`🎯 Starting ${actualWorkers} parallel Odorik workers...`);
+            console.log(`🎯 Starting ${actualWorkers} parallel Odorik workers for batch "${displayBatchName}"...`);
 
             const workerPromises = workerLeads.map((chunk, workerIndex) => {
                 const sipName = sipNames[workerIndex];
@@ -535,12 +569,13 @@ export const startOdorikCalling = async (req: Request, res: Response, next: Next
             });
 
             await Promise.all(workerPromises);
-            console.log('🎉 All Odorik workers completed!');
+            console.log(`🎉 All Odorik workers completed! Batch: "${displayBatchName}"`);
         });
 
         res.status(200).json({
             success: true,
-            message: `Odorik calling started: ${actualWorkers} workerů, ${leads.length} leadů`,
+            message: `Odorik kampaň spuštěna: ${actualWorkers} workerů, ${leads.length} leadů`,
+            batchName: displayBatchName,
             queuedLeads: leads.length,
             aiAgentId: activeAgentId,
             agentName: agentCheck.rows[0].full_name,
