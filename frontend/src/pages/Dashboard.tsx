@@ -1,749 +1,480 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { getLeads, getUsers, blacklistLead, reassignLeads, deleteLeads, Lead, User } from '../api';
 
-const API_BASE = '/api';
-const POLLING_INTERVAL_MS = 3000;
+const AI_AGENT_ID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
+const PAGE_SIZE = 500;
 
-type LeadStatus = 'NOVY' | 'NEZVEDL_TELEFON';
+const AGENTS = [
+    { id: '53c65ca7-68bc-4948-83e5-35a64c17f0fb', name: 'Eva V1', description: 'VIP ceník do SMS' },
+    { id: 'aeec78ff-a86b-4cab-b33a-adeb7c94f08e', name: 'Eva V2', description: 'Šetříme klientům až 40%' },
+    { id: 'e7a469bb-4783-4f96-b961-03dd503e5bfa', name: 'Eva V3', description: 'Nepřeplácíte za služby?' },
+    { id: 'f4adb349-70c3-4e63-8670-81f6c177f61d', name: 'Eva V4', description: 'Nezávazné porovnání' },
+    { id: 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9', name: 'Eva V5', description: 'Dvoustupňová kvalifikace' },
+];
 
-interface Agent {
-    id: string;
-    fullName: string;
-    email: string;
-}
+const STATUS_LABELS: Record<string, { label: string; badge: string }> = {
+    NOVY: { label: 'Nový', badge: 'badge-primary' },
+    CHCE_KONTAKT_AI: { label: 'Chce kontakt', badge: 'badge-success' },
+    NEZVEDL_TELEFON: { label: 'Nezvedl', badge: 'badge-warning' },
+    ODMITNUTO: { label: 'Odmítnuto', badge: 'badge-danger' },
+    NEKONTAKTOVAT: { label: 'Nekontaktovat', badge: 'badge-danger' },
+    ODKLADA: { label: 'Odkládá', badge: 'badge-warning' },
+    CHCE_NABIDKU: { label: 'Chce nabídku', badge: 'badge-success' },
+    POSLAL_FAKTURU: { label: 'Poslal fakturu', badge: 'badge-primary' },
+    NABIDKA_PREDLOZENA: { label: 'Nabídka předložena', badge: 'badge-primary' },
+    CHCE_PODEPSAT_SMLOUVU: { label: 'Chce podepsat', badge: 'badge-success' },
+    UZAVRENO: { label: 'Uzavřeno', badge: 'badge-success' },
+    NEDOSTUPNY: { label: 'Nedostupný', badge: 'badge-gray' },
+};
 
-interface WorkerPhone {
-    worker: number;
-    phone: string;
-}
-
-interface BatchStatus {
-    isRunning: boolean;
-    total: number;
-    completed: number;
-    successful: number;
-    failed: number;
-    inProgress: number;
-    startedAt: string | null;
-    batchName: string | null;
-}
-
-interface RunningCall {
-    callSid: string;
-    leadId: string;
-    company: string;
-    phone: string;
-    status: string;
-    startedAt: string;
-    worker: number;
-}
+const ALL_STATUSES = Object.keys(STATUS_LABELS);
 
 const Dashboard: React.FC = () => {
-    const navigate = useNavigate();
+    const [leads, setLeads] = useState<Lead[]>([]);
+    const [users, setUsers] = useState<User[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [total, setTotal] = useState(0);
+    const [page, setPage] = useState(1);
+    const [totalPages, setTotalPages] = useState(1);
 
-    // Konfigurace kampaně
-    const [batchName, setBatchName] = useState<string>('');
-    const [agents, setAgents] = useState<Agent[]>([]);
-    const [selectedAgentId, setSelectedAgentId] = useState<string>('');
-    const [workers, setWorkers] = useState<number>(1);
-    const [workerPhones, setWorkerPhones] = useState<WorkerPhone[]>([]);
-    const [numbersToCall, setNumbersToCall] = useState<number>(10);
-    const [selectedStatus, setSelectedStatus] = useState<LeadStatus>('NOVY');
-    const [availableLeads, setAvailableLeads] = useState<number>(0);
-    const [promptPreview, setPromptPreview] = useState<{ pitch: string; consent: string } | null>(null);
+    // Filtry
+    const [filterStatus, setFilterStatus] = useState('NOVY');
+    const [filterAssignedTo, setFilterAssignedTo] = useState(AI_AGENT_ID);
+    const [filterSearch, setFilterSearch] = useState('');
+    const [searchInput, setSearchInput] = useState('');
+
+    // Blacklist
+    const [blacklistingId, setBlacklistingId] = useState<string | null>(null);
+    const [blacklistConfirm, setBlacklistConfirm] = useState<string | null>(null);
+
+    // Audio
+    const [playingUrl, setPlayingUrl] = useState<string | null>(null);
+
+    // Panel přeřazení
+    const [showReassign, setShowReassign] = useState(false);
+    const [reassignFrom, setReassignFrom] = useState(AI_AGENT_ID);
+    const [reassignTo, setReassignTo] = useState('aeec78ff-a86b-4cab-b33a-adeb7c94f08e');
+    const [reassignCount, setReassignCount] = useState(100);
+    const [reassigning, setReassigning] = useState(false);
+    const [reassignResult, setReassignResult] = useState<string | null>(null);
+    const [reassignError, setReassignError] = useState('');
+
+    // Panel mazání
+    const [showDelete, setShowDelete] = useState(false);
+    const [deleteAgentId, setDeleteAgentId] = useState(AI_AGENT_ID);
+    const [deleteCount, setDeleteCount] = useState(100);
+    const [deleteConfirm, setDeleteConfirm] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+    const [deleteResult, setDeleteResult] = useState<string | null>(null);
+    const [deleteError, setDeleteError] = useState('');
 
     // Cesta volání - Twilio pevná vs Odorik mobilní
     const [callingRoute, setCallingRoute] = useState<'twilio' | 'odorik'>('twilio');
 
-    // Live status
-    const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
-    const [runningCalls, setRunningCalls] = useState<RunningCall[]>([]);
-    const [totalToday, setTotalToday] = useState<number>(0);
-
-    // Modal
-    const [showResults, setShowResults] = useState<boolean>(false);
-    const [todayResults, setTodayResults] = useState<any[]>([]);
-
-    // ================ Loading & error ================
-    const [starting, setStarting] = useState(false);
-    const [stopping, setStopping] = useState(false);
-    const [error, setError] = useState<string>('');
-
-    // ================ Fetch agents ================
-    useEffect(() => {
-        const fetchAgents = async () => {
-            try {
-                const res = await fetch(`${API_BASE}/users?role=SALES`, { credentials: 'include' });
-                if (!res.ok) return;
-                const data = await res.json();
-                const evaAgents = (data.users || []).filter((u: any) =>
-                    u.email?.toLowerCase().includes('eva') || u.fullName?.toLowerCase().includes('eva')
-                );
-                setAgents(evaAgents);
-                if (evaAgents.length > 0 && !selectedAgentId) {
-                    setSelectedAgentId(evaAgents[0].id);
-                }
-            } catch {
-                // silent
-            }
-        };
-        fetchAgents();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
-    // ================ Fetch worker phones při změně workers ================
-    useEffect(() => {
-        // Odorik má hardcoded workers, nefetchuj
-        if (callingRoute === 'odorik') return;
-
-        const fetchWorkerPhones = async () => {
-            try {
-                const res = await fetch(`${API_BASE}/batch-calls/twilio-number?workers=${workers}`, {
-                    credentials: 'include',
-                });
-                if (!res.ok) return;
-                const data = await res.json();
-                setWorkerPhones(data.workers || []);
-            } catch {
-                // silent
-            }
-        };
-        fetchWorkerPhones();
-    }, [workers, callingRoute]);
-
-    // ================ Fetch dostupné leady ================
-    useEffect(() => {
-        const fetchAvailableLeads = async () => {
-            if (!selectedAgentId) return;
-            try {
-                const res = await fetch(
-                    `${API_BASE}/leads?status=${selectedStatus}&assigned_to=${selectedAgentId}&count_only=true`,
-                    { credentials: 'include' }
-                );
-                if (!res.ok) return;
-                const data = await res.json();
-                setAvailableLeads(data.count || 0);
-            } catch {
-                // silent
-            }
-        };
-        fetchAvailableLeads();
-    }, [selectedAgentId, selectedStatus]);
-
-    // ================ Fetch prompt preview ================
-    useEffect(() => {
-        const fetchPromptPreview = async () => {
-            if (!selectedAgentId) return;
-            try {
-                const res = await fetch(`${API_BASE}/users/${selectedAgentId}`, { credentials: 'include' });
-                if (!res.ok) return;
-                const data = await res.json();
-                const promptVersion = data.user?.promptVersion || 'v1';
-
-                const previews: Record<string, { pitch: string; consent: string }> = {
-                    v1: {
-                        pitch: '„Volám z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?"',
-                        consent: '„Skvěle! Kolega se ozve v krátkém hovoru a připraví Vám ho na míru. Hezký den!"',
-                    },
-                    v2: {
-                        pitch: '„Volám z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?"',
-                        consent: '„Skvěle! Kolega se ozve v krátkém hovoru a připraví Vám ho na míru. Hezký den!"',
-                    },
-                    v5: {
-                        pitch: '„Volám z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?"',
-                        consent: '„Děkuji! Poslední dotaz, jaký počet telefonních čísel máte aktuálně u svého operátora?"',
-                    },
-                };
-                setPromptPreview(previews[promptVersion] || previews.v1);
-            } catch {
-                // silent
-            }
-        };
-        fetchPromptPreview();
-    }, [selectedAgentId]);
-
-    // ================ Polling batch status ================
-    const fetchBatchStatus = useCallback(async () => {
+    const fetchLeads = useCallback(async () => {
+        setLoading(true);
         try {
-            const res = await fetch(`${API_BASE}/batch-calls/batch-status`, { credentials: 'include' });
-            if (!res.ok) return;
-            const data = await res.json();
-            setBatchStatus(data.status || null);
-            setRunningCalls(data.runningCalls || []);
-            setTotalToday(data.totalToday || 0);
-        } catch {
-            // silent
+            const res = await getLeads({
+                status: filterStatus || undefined,
+                assignedTo: filterAssignedTo || undefined,
+                search: filterSearch || undefined,
+                page,
+                limit: PAGE_SIZE,
+            });
+            setLeads(res.data);
+            setTotal(res.pagination.total);
+            setTotalPages(res.pagination.totalPages);
+        } catch (err) {
+            console.error('Failed to fetch leads:', err);
+        } finally {
+            setLoading(false);
+        }
+    }, [filterStatus, filterAssignedTo, filterSearch, page]);
+
+    const fetchUsers = useCallback(async () => {
+        try {
+            const res = await getUsers();
+            setUsers(res.users);
+        } catch (err) {
+            console.error('Failed to fetch users:', err);
         }
     }, []);
 
-    useEffect(() => {
-        fetchBatchStatus();
-        const interval = setInterval(fetchBatchStatus, POLLING_INTERVAL_MS);
-        return () => clearInterval(interval);
-    }, [fetchBatchStatus]);
+    useEffect(() => { fetchUsers(); }, [fetchUsers]);
+    useEffect(() => { setPage(1); }, [filterStatus, filterAssignedTo, filterSearch]);
+    useEffect(() => { fetchLeads(); }, [fetchLeads]);
 
-    // ================ START kampaně ================
-    const handleStartBatch = async () => {
-        if (!selectedAgentId) {
-            setError('Vyberte agenta');
+    const handleSearch = (e: React.FormEvent) => {
+        e.preventDefault();
+        setFilterSearch(searchInput);
+    };
+
+    const handleBlacklist = async (id: string) => {
+        if (blacklistConfirm !== id) { setBlacklistConfirm(id); return; }
+        setBlacklistingId(id);
+        setBlacklistConfirm(null);
+        try {
+            await blacklistLead(id);
+            await fetchLeads();
+        } catch (err) {
+            console.error('Blacklist failed:', err);
+        } finally {
+            setBlacklistingId(null);
+        }
+    };
+
+    const handleReassign = async () => {
+        if (reassignFrom === reassignTo) {
+            setReassignError('Zdrojový a cílový agent musí být různí');
             return;
         }
-        if (numbersToCall <= 0) {
-            setError('Počet hovorů musí být > 0');
+        setReassigning(true);
+        setReassignResult(null);
+        setReassignError('');
+        try {
+            const res = await reassignLeads(reassignFrom, reassignTo, reassignCount);
+            setReassignResult(res.message);
+            await fetchLeads();
+        } catch (err: any) {
+            setReassignError(err.message || 'Chyba při přeřazení');
+        } finally {
+            setReassigning(false);
+        }
+    };
+
+    const handleDelete = async () => {
+        if (!deleteConfirm) {
+            setDeleteConfirm(true);
             return;
         }
-
-        setError('');
-        setStarting(true);
-
+        setDeleting(true);
+        setDeleteResult(null);
+        setDeleteError('');
+        setDeleteConfirm(false);
         try {
-            // =====================================================
-            // ODORIK CESTA - volá /api/ai-calls/start-odorik-calling
-            // =====================================================
-            if (callingRoute === 'odorik') {
-                const res = await fetch(`${API_BASE}/ai-calls/start-odorik-calling`, {
-                    method: 'POST',
-                    credentials: 'include',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        batchName: batchName || undefined,
-                        agentUserId: selectedAgentId,
-                        maxCalls: numbersToCall,
-                        workers: 1, // Odorik zatím jen 1 worker
-                        statusFilter: selectedStatus,
-                    }),
-                });
-
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.error?.message || 'Chyba spuštění Odorik kampaně');
-
-                alert(`✅ Odorik kampaň spuštěna!\nBatch: ${data.batchName}\n${data.queuedLeads} leadů ve frontě\nSIP jméno: ${data.sipNames?.join(', ')}`);
-                await fetchBatchStatus();
-                return;
-            }
-
-            // =====================================================
-            // TWILIO CESTA - PŮVODNÍ FLOW beze změny
-            // =====================================================
-            const res = await fetch(`${API_BASE}/batch-calls/start-batch`, {
-                method: 'POST',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    batchName: batchName || undefined,
-                    agentUserId: selectedAgentId,
-                    workerCount: workers,
-                    numbersToCallCount: numbersToCall,
-                    minCallIntervalSeconds: 0,
-                    statusFilter: selectedStatus,
-                }),
-            });
-
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error?.message || 'Chyba spuštění kampaně');
-
-            alert(`✅ Kampaň spuštěna!\n${data.queuedLeads || numbersToCall} leadů ve frontě`);
-            await fetchBatchStatus();
+            const res = await deleteLeads(deleteAgentId, deleteCount);
+            setDeleteResult(res.message);
+            await fetchLeads();
         } catch (err: any) {
-            setError(err.message);
-            alert(`❌ Chyba: ${err.message}`);
+            setDeleteError(err.message || 'Chyba při mazání');
         } finally {
-            setStarting(false);
+            setDeleting(false);
         }
     };
 
-    // ================ STOP kampaně ================
-    const handleStopBatch = async () => {
-        setStopping(true);
-        try {
-            const endpoint = callingRoute === 'odorik'
-                ? `${API_BASE}/ai-calls/stop`
-                : `${API_BASE}/ai-calls/stop`;
-
-            const res = await fetch(endpoint, {
-                method: 'POST',
-                credentials: 'include',
-            });
-            if (!res.ok) throw new Error('Nepodařilo se zastavit');
-            await fetchBatchStatus();
-        } catch (err: any) {
-            alert(`❌ Chyba: ${err.message}`);
-        } finally {
-            setStopping(false);
-        }
+    const formatDuration = (sec: number | null) => {
+        if (!sec) return '—';
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        return m > 0 ? `${m}m ${s}s` : `${s}s`;
     };
 
-    // ================ Modal - dnešní výsledky ================
-    const handleShowTodayResults = async () => {
-        try {
-            const res = await fetch(`${API_BASE}/batch-calls/batch-results?date=today`, {
-                credentials: 'include',
-            });
-            if (!res.ok) return;
-            const data = await res.json();
-            setTodayResults(data.results || []);
-            setShowResults(true);
-        } catch {
-            // silent
+    const renderPageNumbers = () => {
+        const pages: number[] = [];
+        const delta = 2;
+        for (let i = Math.max(1, page - delta); i <= Math.min(totalPages, page + delta); i++) {
+            pages.push(i);
         }
+        return pages;
     };
 
-    const isRunning = batchStatus?.isRunning || false;
-    const progress = batchStatus
-        ? Math.round(((batchStatus.completed) / Math.max(batchStatus.total, 1)) * 100)
-        : 0;
+    const getAgentName = (id: string) => AGENTS.find(a => a.id === id)?.name || id;
 
     return (
-        <div className="dashboard-container">
+        <div>
             <div className="page-header">
-                <h1>Dashboard</h1>
-                <p className="page-subtitle">Přehled a spuštění AI kampaně</p>
-            </div>
-
-            {/* ==================== CESTA VOLÁNÍ (nový selektor) ==================== */}
-            <div className="config-section" style={{ marginBottom: 16 }}>
-                <div className="config-label" style={{ marginBottom: 12, fontSize: 14, fontWeight: 700 }}>
-                    📡 Cesta volání
+                <div>
+                    <h1 className="page-title">Dashboard</h1>
+                    <p className="page-subtitle">
+                        Celkem {total.toLocaleString('cs-CZ')} leadů
+                        {filterAssignedTo ? ` · ${getAgentName(filterAssignedTo)}` : ''}
+                        {filterStatus ? ` · ${STATUS_LABELS[filterStatus]?.label || filterStatus}` : ''}
+                    </p>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                    {/* Twilio pevná linka */}
+                <div style={{ display: 'flex', gap: 10 }}>
                     <button
-                        type="button"
-                        onClick={() => setCallingRoute('twilio')}
-                        disabled={isRunning}
-                        style={{
-                            padding: '16px',
-                            border: callingRoute === 'twilio' ? '2px solid #3b82f6' : '1px solid #e5e7eb',
-                            borderRadius: 8,
-                            background: callingRoute === 'twilio' ? '#eff6ff' : 'white',
-                            cursor: isRunning ? 'not-allowed' : 'pointer',
-                            textAlign: 'left',
-                            transition: 'all 0.15s',
-                            opacity: isRunning ? 0.6 : 1,
+                        className={`btn ${showReassign ? 'btn-primary' : 'btn-outline'} btn-sm`}
+                        onClick={() => {
+                            setShowReassign(!showReassign);
+                            setShowDelete(false);
+                            setReassignResult(null);
+                            setReassignError('');
                         }}
                     >
-                        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>
-                            🏢 Twilio (pevná linka)
-                        </div>
-                        <div style={{ fontSize: 12, color: '#6b7280' }}>
-                            Standardní cesta, max 5 paralelních hovorů
-                        </div>
+                        🔀 Přeřadit leady
                     </button>
-
-                    {/* Odorik mobilní */}
                     <button
-                        type="button"
-                        onClick={() => setCallingRoute('odorik')}
-                        disabled={isRunning}
-                        style={{
-                            padding: '16px',
-                            border: callingRoute === 'odorik' ? '2px solid #10b981' : '1px solid #e5e7eb',
-                            borderRadius: 8,
-                            background: callingRoute === 'odorik' ? '#ecfdf5' : 'white',
-                            cursor: isRunning ? 'not-allowed' : 'pointer',
-                            textAlign: 'left',
-                            transition: 'all 0.15s',
-                            opacity: isRunning ? 0.6 : 1,
+                        className={`btn ${showDelete ? 'btn-danger' : 'btn-outline'} btn-sm`}
+                        onClick={() => {
+                            setShowDelete(!showDelete);
+                            setShowReassign(false);
+                            setDeleteResult(null);
+                            setDeleteError('');
+                            setDeleteConfirm(false);
                         }}
                     >
-                        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>
-                            📱 Odorik (mobilní číslo)
-                        </div>
-                        <div style={{ fontSize: 12, color: '#6b7280' }}>
-                            Klient vidí +420 703 614 594, zatím 1 worker
-                        </div>
+                        🗑 Smazat leady
+                    </button>
+                    <button className="btn btn-outline btn-sm" onClick={fetchLeads}>
+                        ↻ Obnovit
                     </button>
                 </div>
             </div>
 
-            {/* ==================== KONFIGURACE DÁVKY ==================== */}
-            <div className="config-card">
-                <h2>📞 Konfigurace dávky</h2>
-
-                {/* Název kampaně */}
-                <div className="config-section">
-                    <label className="config-label">Název kampaně (volitelné)</label>
-                    <input
-                        type="text"
-                        className="input"
-                        value={batchName}
-                        onChange={(e) => setBatchName(e.target.value)}
-                        placeholder="např. Cold call ranní"
-                        disabled={isRunning}
-                    />
-                </div>
-
-                {/* Výběr agenta */}
-                <div className="config-section">
-                    <label className="config-label">AI Agent</label>
-                    <select
-                        className="input"
-                        value={selectedAgentId}
-                        onChange={(e) => setSelectedAgentId(e.target.value)}
-                        disabled={isRunning}
-                    >
-                        {agents.map((agent) => (
-                            <option key={agent.id} value={agent.id}>
-                                {agent.fullName} — {agent.email}
-                            </option>
-                        ))}
-                    </select>
-                </div>
-
-                {/* Prompt preview */}
-                {promptPreview && (
-                    <div className="config-section" style={{ background: '#f9fafb', padding: 12, borderRadius: 8 }}>
-                        <div style={{ marginBottom: 8, fontSize: 12, fontWeight: 600, color: '#3b82f6' }}>
-                            📝 PITCH VĚTA
-                        </div>
-                        <div style={{ fontSize: 13, marginBottom: 12, fontStyle: 'italic' }}>
-                            {promptPreview.pitch}
-                        </div>
-                        <div style={{ marginBottom: 8, fontSize: 12, fontWeight: 600, color: '#10b981' }}>
-                            ✅ PŘI SOUHLASU
-                        </div>
-                        <div style={{ fontSize: 13, fontStyle: 'italic' }}>
-                            {promptPreview.consent}
-                        </div>
+            {/* PANEL PŘEŘAZENÍ */}
+            {showReassign && (
+                <div className="card mb-16">
+                    <div className="card-header">
+                        <span className="card-title">🔀 Hromadné přeřazení leadů (NOVY)</span>
+                        <span style={{ fontSize: 12, color: 'var(--gray-400)' }}>
+              Přeřazuje od nejstarších (od spoda nahoru)
+            </span>
                     </div>
-                )}
-
-                {/* ==================== SEKCE WORKERŮ - KONDIČNÍ ==================== */}
-                {callingRoute === 'twilio' ? (
-                    /* TWILIO WORKERS - PŮVODNÍ SEKCE */
-                    <div className="config-section">
-                        <div className="config-label">
-                            Počet workerů (paralelní volání) <span className="config-hint">max 5</span>
-                        </div>
-                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                            {[1, 2, 3, 4, 5].map((n) => (
-                                <button
-                                    key={n}
-                                    type="button"
-                                    onClick={() => setWorkers(n)}
-                                    disabled={isRunning}
-                                    className={`btn worker-btn ${workers === n ? 'btn-primary' : 'btn-outline'}`}
-                                    style={{ width: 60 }}
-                                >
-                                    {n}
-                                </button>
-                            ))}
-                        </div>
-                        {workerPhones.length > 0 && (
-                            <div style={{ marginTop: 12, fontSize: 13 }}>
-                                {workerPhones.map((wp) => (
-                                    <div key={wp.worker} style={{ marginBottom: 4 }}>
-                                        <span style={{ color: '#3b82f6', fontWeight: 600 }}>W{wp.worker}:</span>{' '}
-                                        <code style={{ background: '#f3f4f6', padding: '2px 6px', borderRadius: 4 }}>
-                                            {wp.phone}
-                                        </code>
-                                    </div>
-                                ))}
+                    <div className="card-body">
+                        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                            <div className="form-group" style={{ margin: 0, minWidth: 200 }}>
+                                <label className="form-label">Od agenta</label>
+                                <select className="form-select" value={reassignFrom} onChange={(e) => setReassignFrom(e.target.value)}>
+                                    {AGENTS.map(a => <option key={a.id} value={a.id}>{a.name} — {a.description}</option>)}
+                                </select>
                             </div>
+                            <div style={{ fontSize: 20, color: 'var(--gray-400)', paddingBottom: 4 }}>→</div>
+                            <div className="form-group" style={{ margin: 0, minWidth: 200 }}>
+                                <label className="form-label">K agentovi</label>
+                                <select className="form-select" value={reassignTo} onChange={(e) => setReassignTo(e.target.value)}>
+                                    {AGENTS.map(a => <option key={a.id} value={a.id}>{a.name} — {a.description}</option>)}
+                                </select>
+                            </div>
+                            <div className="form-group" style={{ margin: 0, minWidth: 120 }}>
+                                <label className="form-label">Počet leadů</label>
+                                <input
+                                    type="number" className="form-input" min={1} max={10000}
+                                    value={reassignCount}
+                                    onChange={(e) => setReassignCount(Math.max(1, Number(e.target.value)))}
+                                />
+                            </div>
+                            <button
+                                className="btn btn-primary"
+                                onClick={handleReassign}
+                                disabled={reassigning || reassignFrom === reassignTo}
+                                style={{ marginBottom: 1 }}
+                            >
+                                {reassigning ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Přeřazuji...</> : '🔀 Přeřadit'}
+                            </button>
+                        </div>
+                        {reassignError && <div className="alert alert-danger mt-8">⚠️ {reassignError}</div>}
+                        {reassignResult && <div className="alert alert-success mt-8">✅ {reassignResult}</div>}
+                    </div>
+                </div>
+            )}
+
+            {/* PANEL MAZÁNÍ */}
+            {showDelete && (
+                <div className="card mb-16" style={{ borderColor: 'var(--danger)' }}>
+                    <div className="card-header" style={{ borderBottomColor: '#fecaca' }}>
+                        <span className="card-title" style={{ color: 'var(--danger)' }}>🗑 Hromadné mazání leadů (NOVY)</span>
+                        <span style={{ fontSize: 12, color: 'var(--gray-400)' }}>
+              Natvrdo smaže z DB · čísla půjdou znovu importovat
+            </span>
+                    </div>
+                    <div className="card-body">
+                        <div className="alert alert-danger mb-16">
+                            ⚠️ <strong>Pozor!</strong> Leady budou trvale smazány včetně všech záznamů. Tuto akci nelze vrátit.
+                        </div>
+                        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                            <div className="form-group" style={{ margin: 0, minWidth: 200 }}>
+                                <label className="form-label">Agent</label>
+                                <select className="form-select" value={deleteAgentId} onChange={(e) => { setDeleteAgentId(e.target.value); setDeleteConfirm(false); }}>
+                                    {AGENTS.map(a => <option key={a.id} value={a.id}>{a.name} — {a.description}</option>)}
+                                </select>
+                            </div>
+                            <div className="form-group" style={{ margin: 0, minWidth: 120 }}>
+                                <label className="form-label">Počet leadů</label>
+                                <input
+                                    type="number" className="form-input" min={1} max={10000}
+                                    value={deleteCount}
+                                    onChange={(e) => { setDeleteCount(Math.max(1, Number(e.target.value))); setDeleteConfirm(false); }}
+                                />
+                            </div>
+                            <button
+                                className={`btn ${deleteConfirm ? 'btn-danger' : 'btn-outline'}`}
+                                onClick={handleDelete}
+                                disabled={deleting}
+                                style={{ marginBottom: 1 }}
+                            >
+                                {deleting
+                                    ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Mažu...</>
+                                    : deleteConfirm
+                                        ? `⚠️ POTVRDIT smazání ${deleteCount} leadů`
+                                        : `🗑 Smazat ${deleteCount} leadů`
+                                }
+                            </button>
+                            {deleteConfirm && (
+                                <button
+                                    className="btn btn-outline"
+                                    onClick={() => setDeleteConfirm(false)}
+                                    style={{ marginBottom: 1 }}
+                                >
+                                    ✕ Zrušit
+                                </button>
+                            )}
+                        </div>
+                        {deleteError && <div className="alert alert-danger mt-8">⚠️ {deleteError}</div>}
+                        {deleteResult && <div className="alert alert-success mt-8">✅ {deleteResult}</div>}
+                    </div>
+                </div>
+            )}
+
+            {/* FILTRY */}
+            <div className="card mb-16">
+                <div className="card-body" style={{ padding: '14px 20px' }}>
+                    <form onSubmit={handleSearch} className="filters-bar">
+                        <input
+                            type="text" className="form-input search-input"
+                            placeholder="🔍 Hledat telefon, firma, kontakt..."
+                            value={searchInput}
+                            onChange={(e) => setSearchInput(e.target.value)}
+                        />
+                        <select className="form-select" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
+                            <option value="">Všechny statusy</option>
+                            {ALL_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABELS[s]?.label || s}</option>)}
+                        </select>
+                        <select className="form-select" value={filterAssignedTo} onChange={(e) => setFilterAssignedTo(e.target.value)}>
+                            <option value="">Všichni agenti</option>
+                            {users.map((u) => <option key={u.id} value={u.id}>{u.fullName}</option>)}
+                        </select>
+                        <button type="submit" className="btn btn-primary">Hledat</button>
+                        {(filterStatus !== 'NOVY' || filterSearch || filterAssignedTo !== AI_AGENT_ID) && (
+                            <button type="button" className="btn btn-outline" onClick={() => {
+                                setFilterStatus('NOVY');
+                                setFilterSearch('');
+                                setSearchInput('');
+                                setFilterAssignedTo(AI_AGENT_ID);
+                            }}>
+                                ✕ Reset
+                            </button>
                         )}
+                    </form>
+                </div>
+            </div>
+
+            {/* TABULKA */}
+            <div className="table-wrapper">
+                {loading ? (
+                    <div className="loading-spinner"><span className="spinner" />Načítám leady...</div>
+                ) : leads.length === 0 ? (
+                    <div className="empty-state">
+                        <div className="empty-state-icon">📭</div>
+                        <div className="empty-state-text">Žádné leady nenalezeny</div>
                     </div>
                 ) : (
-                    /* ODORIK WORKERS - HARDCODED 1 aktivní + 3 zamčené */
-                    <div className="config-section">
-                        <div className="config-label">
-                            Počet workerů (paralelní volání) <span className="config-hint">Odorik: 1 aktivní</span>
-                        </div>
-                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                            {[1, 2, 3, 4].map((num) => {
-                                const isActive = num === 1;
-                                return (
-                                    <button
-                                        key={num}
-                                        type="button"
-                                        disabled={!isActive || isRunning}
-                                        title={!isActive ? 'Bude aktivní až po přidání dalšího SIP jména' : ''}
-                                        style={{
-                                            width: 60,
-                                            height: 44,
-                                            border: isActive ? '2px solid #10b981' : '1px solid #e5e7eb',
-                                            borderRadius: 8,
-                                            background: isActive ? '#ecfdf5' : '#f9fafb',
-                                            color: isActive ? '#10b981' : '#9ca3af',
-                                            fontWeight: 700,
-                                            fontSize: 16,
-                                            cursor: isActive && !isRunning ? 'pointer' : 'not-allowed',
-                                        }}
-                                    >
-                                        {isActive ? num : '🔒'}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                        <div style={{ marginTop: 12, padding: 12, background: '#f9fafb', borderRadius: 8, fontSize: 13 }}>
-                            <div style={{ color: '#374151', marginBottom: 4 }}>
-                                <strong>W1:</strong>{' '}
-                                <code style={{ background: 'white', padding: '2px 6px', borderRadius: 4 }}>hejda_test1</code>
-                                {' → '}
-                                <span style={{ color: '#10b981', fontWeight: 600 }}>+420 703 614 594</span>
-                            </div>
-                            <div style={{ color: '#9ca3af', fontSize: 12 }}>
-                                Volající SIP: <code>+420 266 266 095</code> (Odorik pevná)
-                            </div>
-                        </div>
-                    </div>
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>Telefon</th>
+                            <th>Firma / Kontakt</th>
+                            <th>Status</th>
+                            <th>Přiřazen</th>
+                            <th>Nahrávka</th>
+                            <th>Délka</th>
+                            <th>Poznámka Evy</th>
+                            <th>Datum</th>
+                            <th>Akce</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        {leads.map((lead) => {
+                            const aiLog = (lead as any).aiCallLogs?.[0];
+                            const isBlacklisting = blacklistingId === lead.id;
+                            const isConfirming = blacklistConfirm === lead.id;
+
+                            return (
+                                <tr key={lead.id}>
+                                    <td className="td-phone">{lead.phone}</td>
+                                    <td>
+                                        <div style={{ fontWeight: 600, fontSize: 13 }}>{lead.companyName || '—'}</div>
+                                        {lead.contactPerson && <div className="td-muted">{lead.contactPerson}</div>}
+                                    </td>
+                                    <td>
+                      <span className={`badge ${STATUS_LABELS[lead.status]?.badge || 'badge-gray'}`}>
+                        {STATUS_LABELS[lead.status]?.label || lead.status}
+                      </span>
+                                    </td>
+                                    <td className="td-muted">{lead.assignedTo?.fullName || '—'}</td>
+                                    <td>
+                                        {aiLog?.recordingUrl ? (
+                                            <div className="audio-player">
+                                                {playingUrl === aiLog.recordingUrl ? (
+                                                    <audio
+                                                        src={aiLog.recordingUrl} controls autoPlay
+                                                        style={{ width: 200, height: 28 }}
+                                                        onEnded={() => setPlayingUrl(null)}
+                                                    />
+                                                ) : (
+                                                    <button className="btn btn-outline btn-sm" onClick={() => setPlayingUrl(aiLog.recordingUrl)}>
+                                                        ▶ Přehrát
+                                                    </button>
+                                                )}
+                                            </div>
+                                        ) : <span className="td-muted">—</span>}
+                                    </td>
+                                    <td className="td-muted">{formatDuration(aiLog?.duration)}</td>
+                                    <td style={{ maxWidth: 220 }}>
+                                        {aiLog?.aiNotes ? (
+                                            <span style={{
+                                                fontSize: 12, color: 'var(--gray-600)',
+                                                display: '-webkit-box', WebkitLineClamp: 2,
+                                                WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                                            }} title={aiLog.aiNotes}>
+                          {aiLog.aiNotes}
+                        </span>
+                                        ) : <span className="td-muted">—</span>}
+                                    </td>
+                                    <td className="td-muted" style={{ whiteSpace: 'nowrap' }}>
+                                        {new Date(lead.updatedAt).toLocaleDateString('cs-CZ', {
+                                            day: '2-digit', month: '2-digit', year: '2-digit',
+                                            hour: '2-digit', minute: '2-digit',
+                                        })}
+                                    </td>
+                                    <td>
+                                        {lead.status !== 'NEKONTAKTOVAT' && (
+                                            <button
+                                                className={`btn btn-sm ${isConfirming ? 'btn-danger' : 'btn-outline'}`}
+                                                onClick={() => handleBlacklist(lead.id)}
+                                                disabled={isBlacklisting}
+                                                title={isConfirming ? 'Klikni znovu pro potvrzení' : 'Přidat na blacklist'}
+                                            >
+                                                {isBlacklisting ? '...' : isConfirming ? '⚠️ Potvrdit?' : '🚫'}
+                                            </button>
+                                        )}
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                        </tbody>
+                    </table>
                 )}
 
-                {/* Volající číslo (Twilio only) */}
-                {callingRoute === 'twilio' && workerPhones.length > 0 && (
-                    <div className="config-section">
-                        <label className="config-label">Volající číslo</label>
-                        <div style={{
-                            padding: 12,
-                            background: '#eff6ff',
-                            borderRadius: 8,
-                            color: '#3b82f6',
-                            fontWeight: 600
-                        }}>
-                            {workerPhones[0]?.phone}
-                        </div>
-                    </div>
-                )}
-
-                {/* Status filter */}
-                <div className="config-section">
-                    <label className="config-label">Status leadů k volání</label>
-                    <select
-                        className="input"
-                        value={selectedStatus}
-                        onChange={(e) => setSelectedStatus(e.target.value as LeadStatus)}
-                        disabled={isRunning}
-                    >
-                        <option value="NOVY">NOVÝ (první kontakt)</option>
-                        <option value="NEZVEDL_TELEFON">NEZVEDL_TELEFON (retry)</option>
-                    </select>
-                </div>
-
-                {/* Dostupné leady */}
-                <div className="config-section">
-                    <label className="config-label">Dostupné leady ke kontaktování</label>
-                    <div style={{
-                        padding: 12,
-                        background: availableLeads > 0 ? '#ecfdf5' : '#fef2f2',
-                        borderRadius: 8,
-                        color: availableLeads > 0 ? '#10b981' : '#dc2626',
-                        fontWeight: 700,
-                        fontSize: 18,
-                    }}>
-                        {availableLeads.toLocaleString()} leadů se statusem {selectedStatus}
-                    </div>
-                </div>
-
-                {/* Počet hovorů */}
-                <div className="config-section">
-                    <label className="config-label">
-                        Počet hovorů v dávce{' '}
-                        <span className="config-hint">(max {availableLeads.toLocaleString()})</span>
-                    </label>
-                    <input
-                        type="number"
-                        className="input"
-                        value={numbersToCall}
-                        onChange={(e) => setNumbersToCall(Math.max(1, parseInt(e.target.value) || 0))}
-                        min={1}
-                        max={availableLeads}
-                        disabled={isRunning}
-                    />
-                </div>
-
-                {/* Chybová hláška */}
-                {error && (
-                    <div style={{
-                        padding: 12,
-                        background: '#fef2f2',
-                        color: '#dc2626',
-                        borderRadius: 8,
-                        marginBottom: 16,
-                        fontSize: 14,
-                    }}>
-                        ⚠️ {error}
-                    </div>
-                )}
-
-                {/* Start / Stop tlačítka */}
-                <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
-                    <button
-                        onClick={handleStartBatch}
-                        disabled={starting || isRunning || availableLeads === 0}
-                        className="btn btn-primary"
-                        style={{ flex: 1, padding: '12px', fontSize: 15, fontWeight: 700 }}
-                    >
-                        {starting ? '⏳ Spouštím...' : '🚀 Spustit AI volání'}
-                    </button>
-
-                    {isRunning && (
-                        <button
-                            onClick={handleStopBatch}
-                            disabled={stopping}
-                            className="btn btn-outline"
-                            style={{ flex: 1, padding: '12px', fontSize: 15 }}
-                        >
-                            {stopping ? '⏳ Zastavuji...' : '⏹ Zastavit'}
-                        </button>
-                    )}
-                </div>
-
-                {/* Info indikátor cesty volání */}
-                <div style={{
-                    textAlign: 'center',
-                    marginTop: 8,
-                    fontSize: 12,
-                    color: callingRoute === 'odorik' ? '#10b981' : '#3b82f6',
-                    fontWeight: 600,
-                }}>
-                    {callingRoute === 'odorik'
-                        ? '📱 Bude volat přes Odorik (mobilní CLIP +420 703 614 594)'
-                        : '🏢 Bude volat přes Twilio (pevná linka)'}
-                </div>
-            </div>
-
-            {/* ==================== LIVE STATUS ==================== */}
-            {batchStatus && (
-                <div className="stats-card" style={{ marginTop: 24 }}>
-                    <h2>📊 Live status</h2>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 16 }}>
-                        <div>
-                            <div style={{ fontSize: 12, color: '#6b7280' }}>Celkem v dávce</div>
-                            <div style={{ fontSize: 24, fontWeight: 700 }}>{batchStatus.total}</div>
-                        </div>
-                        <div>
-                            <div style={{ fontSize: 12, color: '#6b7280' }}>Dokončeno</div>
-                            <div style={{ fontSize: 24, fontWeight: 700, color: '#10b981' }}>{batchStatus.completed}</div>
-                        </div>
-                        <div>
-                            <div style={{ fontSize: 12, color: '#6b7280' }}>Aktivní hovory</div>
-                            <div style={{ fontSize: 24, fontWeight: 700, color: '#3b82f6' }}>{batchStatus.inProgress}</div>
-                        </div>
-                        <div>
-                            <div style={{ fontSize: 12, color: '#6b7280' }}>Dnes celkem</div>
-                            <div style={{ fontSize: 24, fontWeight: 700 }}>
-                                <button
-                                    onClick={handleShowTodayResults}
-                                    style={{
-                                        background: 'transparent',
-                                        border: 'none',
-                                        color: '#3b82f6',
-                                        cursor: 'pointer',
-                                        fontSize: 24,
-                                        fontWeight: 700,
-                                        padding: 0,
-                                    }}
-                                >
-                                    {totalToday}
+                {/* PAGINACE */}
+                {!loading && totalPages > 1 && (
+                    <div className="pagination">
+            <span className="pagination-info">
+              Strana {page} z {totalPages} · {total.toLocaleString('cs-CZ')} leadů
+            </span>
+                        <div className="pagination-controls">
+                            <button className="pagination-btn" onClick={() => setPage(1)} disabled={page === 1}>«</button>
+                            <button className="pagination-btn" onClick={() => setPage(p => p - 1)} disabled={page === 1}>‹</button>
+                            {renderPageNumbers().map((p) => (
+                                <button key={p} className={`pagination-btn ${p === page ? 'active' : ''}`} onClick={() => setPage(p)}>
+                                    {p}
                                 </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Progress bar */}
-                    {batchStatus.total > 0 && (
-                        <div>
-                            <div style={{
-                                height: 8,
-                                background: '#e5e7eb',
-                                borderRadius: 4,
-                                overflow: 'hidden',
-                                marginBottom: 8,
-                            }}>
-                                <div style={{
-                                    width: `${progress}%`,
-                                    height: '100%',
-                                    background: '#10b981',
-                                    transition: 'width 0.3s',
-                                }} />
-                            </div>
-                            <div style={{ fontSize: 12, color: '#6b7280', textAlign: 'center' }}>
-                                {progress}% dokončeno ({batchStatus.completed} / {batchStatus.total})
-                            </div>
-                        </div>
-                    )}
-                </div>
-            )}
-
-            {/* ==================== AKTIVNÍ HOVORY ==================== */}
-            {runningCalls.length > 0 && (
-                <div className="stats-card" style={{ marginTop: 24 }}>
-                    <h2>☎ Aktivní hovory ({runningCalls.length})</h2>
-                    <div style={{ maxHeight: 300, overflowY: 'auto' }}>
-                        {runningCalls.map((call) => (
-                            <div key={call.callSid} style={{
-                                padding: 12,
-                                borderBottom: '1px solid #e5e7eb',
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'center',
-                            }}>
-                                <div>
-                                    <div style={{ fontWeight: 600 }}>{call.company}</div>
-                                    <div style={{ fontSize: 12, color: '#6b7280' }}>
-                                        W{call.worker} · {call.phone} · {call.status}
-                                    </div>
-                                </div>
-                                <div style={{ fontSize: 11, color: '#9ca3af' }}>
-                                    {new Date(call.startedAt).toLocaleTimeString('cs-CZ')}
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
-
-            {/* ==================== MODAL - dnešní výsledky ==================== */}
-            {showResults && (
-                <div style={{
-                    position: 'fixed',
-                    top: 0, left: 0, right: 0, bottom: 0,
-                    background: 'rgba(0,0,0,0.5)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    zIndex: 1000,
-                }} onClick={() => setShowResults(false)}>
-                    <div style={{
-                        background: 'white',
-                        borderRadius: 12,
-                        padding: 24,
-                        maxWidth: 800,
-                        width: '90%',
-                        maxHeight: '80vh',
-                        overflowY: 'auto',
-                    }} onClick={(e) => e.stopPropagation()}>
-                        <h2>Dnešní výsledky ({todayResults.length})</h2>
-                        <div style={{ marginTop: 16 }}>
-                            {todayResults.map((r: any, i: number) => (
-                                <div key={i} style={{
-                                    padding: 12,
-                                    borderBottom: '1px solid #e5e7eb',
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                }}>
-                                    <div>
-                                        <div style={{ fontWeight: 600 }}>{r.company}</div>
-                                        <div style={{ fontSize: 12, color: '#6b7280' }}>
-                                            {r.phone} · {r.outcome}
-                                        </div>
-                                    </div>
-                                    <div>
-                                        {new Date(r.startedAt).toLocaleTimeString('cs-CZ')}
-                                    </div>
-                                </div>
                             ))}
+                            <button className="pagination-btn" onClick={() => setPage(p => p + 1)} disabled={page === totalPages}>›</button>
+                            <button className="pagination-btn" onClick={() => setPage(totalPages)} disabled={page === totalPages}>»</button>
                         </div>
-                        <button
-                            onClick={() => setShowResults(false)}
-                            className="btn btn-outline"
-                            style={{ marginTop: 16 }}
-                        >
-                            Zavřít
-                        </button>
                     </div>
-                </div>
-            )}
+                )}
+            </div>
         </div>
     );
 };
