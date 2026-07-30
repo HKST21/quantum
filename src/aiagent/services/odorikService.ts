@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios';
+import { createAlertThrottled } from '../../services/alertsService';
 
 // ============================================================================
 // ODORIK SERVICE
@@ -11,6 +12,8 @@ import axios, { AxiosError } from 'axios';
 // Ověřeno v oficiálních PHP/Ruby příkladech od Odoriku.
 //
 // Dokumentace: https://www.odorik.cz/w/api:public_numbers
+//
+// Při chybách vytváří alerty přes alertsService (throttled aby nespammoval).
 // ============================================================================
 
 const ODORIK_API_BASE_URL = 'https://www.odorik.cz/api/v1';
@@ -56,7 +59,6 @@ export class OdorikService {
 
     /**
      * Získá aktuální seznam routes pro SIP jméno.
-     * Auth: user + password jako query parametry.
      */
     async getRoutes(sipName: string): Promise<any[]> {
         if (!this.apiUser || !this.apiPassword) {
@@ -75,13 +77,18 @@ export class OdorikService {
                 timeout: 10000,
             });
 
-            // Odorik může vrátit pole nebo objekt s errors - vždy validovat
             if (Array.isArray(response.data)) {
                 return response.data;
             }
 
             if (response.data && response.data.errors) {
                 console.error(`❌ Odorik API errors:`, response.data.errors);
+                await createAlertThrottled({
+                    type: 'ODORIK_API_ERROR',
+                    message: `Odorik API vrátilo chyby při getRoutes: ${JSON.stringify(response.data.errors)}`,
+                    severity: 'error',
+                    metadata: { sipName, errors: response.data.errors },
+                });
                 return [];
             }
 
@@ -94,13 +101,20 @@ export class OdorikService {
                 data: axiosError.response?.data,
                 message: axiosError.message,
             });
+
+            await createAlertThrottled({
+                type: 'ODORIK_API_ERROR',
+                message: `Odorik API selhalo při getRoutes pro ${sipName}: ${axiosError.message}`,
+                severity: 'error',
+                metadata: { sipName, status: axiosError.response?.status },
+            });
+
             throw new Error(`Odorik API error: ${axiosError.message}`);
         }
     }
 
     /**
      * Smaže konkrétní route podle ID.
-     * Auth: user + password jako query parametry.
      */
     async deleteRoute(sipName: string, routeId: number | string): Promise<boolean> {
         if (!this.apiUser || !this.apiPassword) {
@@ -154,18 +168,14 @@ export class OdorikService {
 
     /**
      * Nastaví dynamické přesměrování SIP jména na cílové telefonní číslo.
-     * Nejdřív smaže všechny existující routes, pak přidá nový.
-     * Auth: user + password v POST form body.
      */
     async setForward(sipName: string, targetPhone: string): Promise<boolean> {
         if (!this.apiUser || !this.apiPassword) {
             throw new Error('Odorik API credentials not configured');
         }
 
-        // KROK 1: Smaž všechny existující routes
         await this.deleteAllRoutes(sipName);
 
-        // KROK 2: Přidej nový route
         const publicNumber = this.formatPublicNumber(sipName);
         const ringingNumber = this.formatRingingNumber(targetPhone);
 
@@ -203,6 +213,14 @@ export class OdorikService {
                 data: axiosError.response?.data,
                 message: axiosError.message,
             });
+
+            await createAlertThrottled({
+                type: 'ODORIK_API_ERROR',
+                message: `Odorik API selhalo při setForward pro ${sipName}: ${axiosError.message}`,
+                severity: 'error',
+                metadata: { sipName, targetPhone, status: axiosError.response?.status },
+            });
+
             throw new Error(`Odorik API error: ${axiosError.message}`);
         }
     }

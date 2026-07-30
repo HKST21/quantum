@@ -1,6 +1,7 @@
 import Twilio from 'twilio';
 import { TwilioCallResponse, TwilioCallStatus } from '../types/aiCalls.types';
 import { normalizePhoneNumber } from '../utils/phoneUtils';
+import { createAlertThrottled } from '../../services/alertsService';
 
 // ============================================================================
 // TWILIO SERVICE - QUANTUM CRM
@@ -10,14 +11,12 @@ import { normalizePhoneNumber } from '../utils/phoneUtils';
 //
 // 1. Standardní PSTN flow:
 //    Backend → Twilio API (client.calls.create) → Twilio PSTN → klient
-//    Používá se když leadPhone je běžné E.164 číslo a from je Twilio číslo.
 //
 // 2. Odorik BYOC flow (mobilní CLIP):
-//    Backend → Odorik API (setForward na SIP jméno) → Twilio API s SIP URI
+//    Backend → Odorik API (setForward) → Twilio API s SIP URI
 //    → Twilio BYOC trunk → Odorik SIP proxy → PSTN → klient
-//    Používá se když leadPhone je SIP URI (sip:hejda_prod1@sip.odorik.cz)
-//    a from je Odorik pevná linka (ODORIK_PHONE_NUMBER).
 //
+// Při chybách vytváří alerty přes alertsService (throttled).
 // ============================================================================
 
 export class TwilioService {
@@ -43,19 +42,12 @@ export class TwilioService {
         });
     }
 
-    /**
-     * Initiate outbound call
-     * @param leadPhone - Cílové číslo (E.164 formát) NEBO SIP URI (Odorik flow)
-     * @param leadId - UUID leadu v DB
-     * @param fromNumber - Volitelné číslo volajícího, jinak fallback na TWILIO_PHONE_NUMBER
-     */
     async initiateCall(
         leadPhone: string,
         leadId: string,
         fromNumber?: string
     ): Promise<TwilioCallResponse> {
         try {
-            // Podpora SIP URI destinace (Odorik flow) nebo E.164 čísla (standardní flow)
             let destinationUri: string;
             if (leadPhone.startsWith('sip:')) {
                 destinationUri = leadPhone;
@@ -66,7 +58,6 @@ export class TwilioService {
                 destinationUri = normalized;
             }
 
-            // Použij předané číslo nebo fallback na ENV
             const callerNumber = fromNumber || this.defaultPhoneNumber;
 
             if (!callerNumber) {
@@ -79,7 +70,6 @@ export class TwilioService {
                 leadId,
             });
 
-            // Base parametry pro Twilio call
             const callParams: any = {
                 to: destinationUri,
                 from: callerNumber,
@@ -93,7 +83,6 @@ export class TwilioService {
                 recordingStatusCallbackEvent: ['completed'],
             };
 
-            // Pokud voláme z Odorik čísla, přidej BYOC trunk SID
             const odorikNumber = process.env.ODORIK_PHONE_NUMBER;
             const odorikTrunkSid = process.env.ODORIK_BYOC_TRUNK_SID;
             if (odorikNumber && odorikTrunkSid && callerNumber === odorikNumber) {
@@ -114,6 +103,15 @@ export class TwilioService {
             return { sid: call.sid, status: call.status, to: call.to, from: call.from, duration: null };
         } catch (error: any) {
             console.error('❌ Twilio call initiation failed:', error);
+
+            // Alert pro monitoring - throttled aby nespammoval
+            await createAlertThrottled({
+                type: 'TWILIO_CALL_FAILED',
+                message: `Twilio initiateCall selhalo pro lead ${leadId}: ${error.message}`,
+                severity: 'error',
+                metadata: { leadId, leadPhone, fromNumber, error: error.message },
+            });
+
             throw new Error(`Twilio call failed: ${error.message}`);
         }
     }
