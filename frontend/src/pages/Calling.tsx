@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-    getBatchStatus, getTwilioNumber, getAvgDuration,
-    startAICalling, BatchStatus, AvgDuration,
+    getBatchStatus, getTwilioNumber, getAvgDuration, getOdorikConfig,
+    startAICalling, startOdorikCalling, BatchStatus, AvgDuration, OdorikConfig,
 } from '../api';
 
 type CallingStep = 'setup' | 'reauth' | 'calling' | 'done';
+type CallingProvider = 'twilio' | 'odorik';
 
 interface AgentOption {
     id: string;
@@ -54,8 +55,9 @@ const AGENTS: AgentOption[] = [
     },
 ];
 
-const MAX_WORKERS = 5;
-const WORKER_PHONES = [
+// Twilio worker konfigurace (statická, odpovídá AI_PHONE_1..5 v ENV backendu)
+const TWILIO_MAX_WORKERS = 5;
+const TWILIO_WORKER_PHONES = [
     '+420228810401',
     '+420228810985',
     '+420228811207',
@@ -65,10 +67,12 @@ const WORKER_PHONES = [
 
 const Calling: React.FC = () => {
     const [step, setStep] = useState<CallingStep>('setup');
+    const [provider, setProvider] = useState<CallingProvider>('twilio');
     const [selectedAgent, setSelectedAgent] = useState<AgentOption>(AGENTS[0]);
     const [maxCalls, setMaxCalls] = useState<number>(100);
     const [workers, setWorkers] = useState<number>(1);
     const [twilioNumber, setTwilioNumber] = useState<string>('');
+    const [odorikConfig, setOdorikConfig] = useState<OdorikConfig | null>(null);
     const [avgDuration, setAvgDuration] = useState<AvgDuration | null>(null);
     const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
     const [novyCount, setNovyCount] = useState<number>(0);
@@ -80,6 +84,39 @@ const Calling: React.FC = () => {
     const [error, setError] = useState('');
 
     const pollRef = useRef<NodeJS.Timeout | null>(null);
+
+    // Odorik config se načítá jednou při mountu - nezávisí na vybraném agentovi.
+    // Je to jediný zdroj pravdy pro to, kolik Odorik workerů (schválených SIP jmen) je k dispozici.
+    useEffect(() => {
+        const loadOdorikConfig = async () => {
+            try {
+                const cfg = await getOdorikConfig();
+                setOdorikConfig(cfg);
+            } catch (err) {
+                console.error('Failed to load Odorik config:', err);
+                setOdorikConfig({ sipNames: [], maxWorkers: 0, odorikPhoneNumber: null });
+            }
+        };
+        loadOdorikConfig();
+    }, []);
+
+    const maxWorkersAvailable = provider === 'twilio'
+        ? TWILIO_MAX_WORKERS
+        : (odorikConfig?.maxWorkers ?? 0);
+
+    const workerLabels: string[] = provider === 'twilio'
+        ? TWILIO_WORKER_PHONES
+        : (odorikConfig?.sipNames ?? []);
+
+    const odorikUnavailable = provider === 'odorik' && odorikConfig !== null && odorikConfig.maxWorkers === 0;
+
+    // Ochrana proti tomu, aby zůstal vybraný počet workerů vyšší, než kolik
+    // aktuální provider reálně nabízí (např. přepnutí z Twilio 5 workerů na Odorik 1).
+    useEffect(() => {
+        if (maxWorkersAvailable > 0 && workers > maxWorkersAvailable) {
+            setWorkers(maxWorkersAvailable);
+        }
+    }, [maxWorkersAvailable, workers]);
 
     const loadMeta = useCallback(async (agentId: string) => {
         setLoadingMeta(true);
@@ -178,7 +215,13 @@ const Calling: React.FC = () => {
                 setReauthLoading(false);
                 return;
             }
-            await startAICalling(maxCalls, selectedAgent.id, workers);
+
+            if (provider === 'twilio') {
+                await startAICalling(maxCalls, selectedAgent.id, workers);
+            } else {
+                await startOdorikCalling(maxCalls, selectedAgent.id, workers);
+            }
+
             const status = await getBatchStatus(selectedAgent.id);
             setBatchStatus(status);
             setStartedAt(new Date());
@@ -263,26 +306,61 @@ const Calling: React.FC = () => {
                                 </div>
                             </div>
 
+                            {/* Provider select */}
+                            <div className="form-group">
+                                <label className="form-label">Poskytovatel volání</label>
+                                <div style={{ display: 'flex', gap: 8 }}>
+                                    <button
+                                        type="button"
+                                        className={`btn ${provider === 'twilio' ? 'btn-primary' : 'btn-outline'}`}
+                                        onClick={() => setProvider('twilio')}
+                                    >
+                                        ☎️ Twilio (pevná linka)
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={`btn ${provider === 'odorik' ? 'btn-primary' : 'btn-outline'}`}
+                                        onClick={() => setProvider('odorik')}
+                                        disabled={odorikConfig === null || odorikConfig.maxWorkers === 0}
+                                        title={odorikUnavailable ? 'Žádné SIP jméno není aktuálně schváleno' : undefined}
+                                    >
+                                        📱 Odorik (mobilní)
+                                    </button>
+                                </div>
+                                {odorikUnavailable && (
+                                    <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 6 }}>
+                                        ⚠️ Odorik momentálně nedostupný — žádné SIP jméno není schváleno.
+                                    </div>
+                                )}
+                            </div>
+
                             <div className="form-group">
                                 <label className="form-label">
                                     Počet workerů (paralelní volání)
-                                    <span style={{ fontWeight: 400, color: 'var(--gray-400)', marginLeft: 8, fontSize: 12 }}>max {MAX_WORKERS}</span>
+                                    <span style={{ fontWeight: 400, color: 'var(--gray-400)', marginLeft: 8, fontSize: 12 }}>max {maxWorkersAvailable}</span>
                                 </label>
                                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                                    {Array.from({ length: MAX_WORKERS }, (_, i) => i + 1).map(n => (
+                                    {Array.from({ length: maxWorkersAvailable }, (_, i) => i + 1).map(n => (
                                         <button key={n} type="button" className={`btn ${workers === n ? 'btn-primary' : 'btn-outline'}`} style={{ minWidth: 44 }} onClick={() => setWorkers(n)}>
                                             {n}
                                         </button>
                                     ))}
+                                    {maxWorkersAvailable === 0 && (
+                                        <span style={{ fontSize: 13, color: 'var(--gray-400)', alignSelf: 'center' }}>
+                                            {provider === 'odorik' ? 'Načítám Odorik konfiguraci...' : '—'}
+                                        </span>
+                                    )}
                                 </div>
-                                <div style={{ marginTop: 8, fontSize: 12, color: 'var(--gray-500)' }}>
-                                    {WORKER_PHONES.slice(0, workers).map((phone, i) => (
-                                        <span key={phone} style={{ marginRight: 10, fontFamily: 'monospace', color: 'var(--primary)' }}>W{i + 1}: {phone}</span>
-                                    ))}
-                                </div>
+                                {workerLabels.length > 0 && (
+                                    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--gray-500)' }}>
+                                        {workerLabels.slice(0, workers).map((label, i) => (
+                                            <span key={label} style={{ marginRight: 10, fontFamily: 'monospace', color: 'var(--primary)' }}>W{i + 1}: {label}</span>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
 
-                            {workers === 1 && (
+                            {provider === 'twilio' && workers === 1 && (
                                 <div className="form-group">
                                     <label className="form-label">Volající číslo</label>
                                     <div style={{ padding: '9px 12px', background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', fontFamily: 'monospace', fontSize: 15, fontWeight: 700, color: 'var(--primary)' }}>
@@ -332,7 +410,11 @@ const Calling: React.FC = () => {
                                 <div className="alert alert-danger">❌ Žádné leady se statusem NOVY pro tohoto agenta. Importuj leady nebo zařaď nedovolané zpět.</div>
                             )}
 
-                            <button className="btn btn-primary btn-lg w-full" onClick={() => setStep('reauth')} disabled={novyCount === 0 || loadingMeta}>
+                            <button
+                                className="btn btn-primary btn-lg w-full"
+                                onClick={() => setStep('reauth')}
+                                disabled={novyCount === 0 || loadingMeta || odorikUnavailable}
+                            >
                                 Pokračovat k ověření →
                             </button>
                         </div>
@@ -347,9 +429,10 @@ const Calling: React.FC = () => {
                         <div className="card-body">
                             <div className="alert alert-warning mb-16">
                                 <div>
+                                    Poskytovatel: <strong>{provider === 'twilio' ? '☎️ Twilio (pevná linka)' : '📱 Odorik (mobilní)'}</strong><br />
                                     Agent: <strong>{selectedAgent.name}</strong> — {selectedAgent.description}<br />
                                     Počet hovorů: <strong>{maxCalls.toLocaleString('cs-CZ')}</strong><br />
-                                    Workeři: <strong>{workers}×</strong> <span style={{ fontFamily: 'monospace', fontSize: 12 }}>({WORKER_PHONES.slice(0, workers).join(', ')})</span><br />
+                                    Workeři: <strong>{workers}×</strong> <span style={{ fontFamily: 'monospace', fontSize: 12 }}>({workerLabels.slice(0, workers).join(', ')})</span><br />
                                     Odhadovaný čas: <strong>{estimateTime(maxCalls, workers)}</strong><br /><br />
                                     Pro potvrzení zadej své heslo.
                                 </div>
@@ -375,7 +458,7 @@ const Calling: React.FC = () => {
             {step === 'calling' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div style={{ background: 'var(--primary-light)', border: '1px solid #bfdbfe', borderRadius: 'var(--radius)', padding: '8px 14px', fontSize: 13, color: 'var(--primary)', fontWeight: 600, marginBottom: 12 }}>
-                        🤖 {selectedAgent.name} · {workers} worker{workers > 1 ? 'y' : ''} · „{selectedAgent.pitch.slice(0, 55)}..."
+                        🤖 {selectedAgent.name} · {provider === 'twilio' ? '☎️ Twilio' : '📱 Odorik'} · {workers} worker{workers > 1 ? 'y' : ''} · „{selectedAgent.pitch.slice(0, 55)}..."
                     </div>
                     <div className="live-feed mb-16">
                         <span className="live-dot" />

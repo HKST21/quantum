@@ -110,6 +110,13 @@ export interface Agent {
     id: string; fullName: string; email: string;
 }
 
+// Odorik konfigurace - aktivně nakonfigurovaná SIP jména z ENV (jen schválená)
+export interface OdorikConfig {
+    sipNames: string[];
+    maxWorkers: number;
+    odorikPhoneNumber: string | null;
+}
+
 export const getBatchStatus = (agentUserId?: string): Promise<BatchStatus> => {
     const query = agentUserId ? `?agentUserId=${agentUserId}` : '';
     return fetchJson(`/ai-calls/batch-status${query}`);
@@ -125,6 +132,9 @@ export const getBatchHistory = (): Promise<{ batches: BatchHistoryItem[] }> =>
 
 export const getTwilioNumber = (): Promise<{ phone: string }> =>
     fetchJson('/ai-calls/twilio-number');
+
+export const getOdorikConfig = (): Promise<OdorikConfig> =>
+    fetchJson('/ai-calls/odorik-config');
 
 export const getUnanswered = (agentUserId?: string): Promise<{ leads: UnansweredLead[]; total: number }> => {
     const query = agentUserId ? `?agentUserId=${agentUserId}` : '';
@@ -142,6 +152,12 @@ export const getAvgDuration = (): Promise<AvgDuration> =>
 
 export const startAICalling = (maxCalls: number, agentUserId: string, workers: number = 1): Promise<any> =>
     fetchJson('/ai-calls/start', {
+        method: 'POST',
+        body: JSON.stringify({ maxCalls, agentUserId, workers }),
+    });
+
+export const startOdorikCalling = (maxCalls: number, agentUserId: string, workers: number = 1): Promise<any> =>
+    fetchJson('/ai-calls/start-odorik-calling', {
         method: 'POST',
         body: JSON.stringify({ maxCalls, agentUserId, workers }),
     });

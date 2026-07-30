@@ -307,14 +307,6 @@ export const handleRecordingCallback = async (req: Request, res: Response, _next
         console.error('❌ Recording callback error:', error);
         res.status(200).send('OK');
     }
-
-    // ============================================
-// POST /api/ai-calls/test-odorik
-// TESTOVACÍ endpoint pro ověření Twilio → Odorik BYOC pipeline
-// Vezme existující lead z DB a zavolá ho přes Odorik SIP trunk
-// From number = 266266095 (Hejdova pevná Odorik linka)
-// ============================================
-
 };
 
 // ============================================
@@ -378,21 +370,30 @@ export const startOdorikTestCall = async (req: Request, res: Response, next: Nex
     }
 };
 
-// ============================================================================
-// SNIPPET pro aiCalls.controller.ts
-// ============================================================================
+// ============================================
+// GET /api/ai-calls/odorik-config
+// Vrátí frontendu aktivně nakonfigurovaná Odorik SIP jména (z ENV)
+// a odvozený maximální počet workerů.
 //
-// Vlož tento kód do aiCalls.controller.ts:
-//
-// 1. Nahoře v souboru přidej import:
-//    import { odorikService } from '../services/odorikService';
-//
-// 2. Za funkci startOdorikTestCall vlož novou funkci startOdorikCalling
-//    (viz níže).
-//
-// 3. V routes souboru přidej novou route (viz aiCalls.routes.ts snippet).
-//
-// ============================================================================
+// Toto je JEDINÝ zdroj pravdy - frontend podle tohoto dynamicky
+// omezuje "Počet workerů" ve výběru providera Odorik. Žádný extra
+// whitelist/schvalovací mechanismus se nekontroluje - do ENV se
+// dávají POUZE SIP jména, která už Odorik/T-Mobile schválili.
+// ============================================
+export const getOdorikConfig = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const sipNames = odorikService.getActiveSipNames();
+        const odorikNumber = process.env.ODORIK_PHONE_NUMBER || null;
+
+        res.status(200).json({
+            sipNames,
+            maxWorkers: sipNames.length,
+            odorikPhoneNumber: odorikNumber,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
 
 // ============================================
 // POST /api/ai-calls/start-odorik-calling
@@ -409,20 +410,12 @@ export const startOdorikTestCall = async (req: Request, res: Response, next: Nex
 //   Worker 1 = ODORIK_SIP_NAME_1 (např. hejda_test1)
 //   Worker 2 = ODORIK_SIP_NAME_2 (např. hejda_test2)
 //   → Jeden worker = jedno SIP jméno = sériové zpracování (bez race condition)
-// ============================================
-// ============================================================================
-// SNIPPET pro aiCalls.controller.ts
-// ============================================================================
-// Nahraď existující funkci startOdorikCalling touto verzí.
-// Přidává podporu:
-//   - batchName (zobrazí se v Render logs pro identifikaci kampaně)
-//   - agentUserId (výběr agenta Eva v1-v5 jako u Twilio)
-//   - statusFilter (NOVY / NEZVEDL_TELEFON) - respektuje volbu z Dashboardu
 //
-// Ostatní parametry (minCallInterval, retryDelay atd.) se přijímají ale
-// v Odorik cestě nejsou aktivní (UI je má disabled).
-// ============================================================================
-
+// Výběr leadů je teď 1:1 shodný s Twilio /start:
+//   - S leadIds → stejný SELECT jako u Twilia
+//   - Bez leadIds (auto-výběr) → callOrchestrator.getLeadsForCalling
+//     (žádný vlastní dotaz, žádný blacklisted sloupec, žádný statusFilter/batchName)
+// ============================================
 export const startOdorikCalling = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         const {
@@ -430,20 +423,15 @@ export const startOdorikCalling = async (req: Request, res: Response, next: Next
             maxCalls = 50,
             agentUserId,
             workers = 1,
-            batchName,
-            statusFilter = 'NOVY',
         } = req.body as StartAICallingRequest & {
             agentUserId?: string;
             workers?: number;
-            batchName?: string;
-            statusFilter?: 'NOVY' | 'NEZVEDL_TELEFON';
         };
 
         const activeAgentId = agentUserId || process.env.AI_AGENT_USER_ID || DEFAULT_AI_AGENT_ID;
-        const displayBatchName = batchName || `Odorik ${new Date().toLocaleString('cs-CZ')}`;
 
-        console.log(`🚀 Odorik AI Calling: "${displayBatchName}" | Agent: ${activeAgentId} | Filter: ${statusFilter}`);
-        console.log('📋 Parameters:', { leadIds: leadIds?.length || 'auto', maxCalls, agentUserId: activeAgentId, workers, batchName: displayBatchName });
+        console.log(`🚀 Odorik AI Calling start requested by: ${req.user?.fullName} | Agent: ${activeAgentId}`);
+        console.log('📋 Parameters:', { leadIds: leadIds?.length || 'auto', maxCalls, agentUserId: activeAgentId, workers });
 
         // Ověř agenta
         const agentCheck = await pool.query(
@@ -452,15 +440,8 @@ export const startOdorikCalling = async (req: Request, res: Response, next: Next
         );
         if (agentCheck.rows.length === 0) throw new BadRequestError(`Agent ${activeAgentId} nenalezen`);
 
-        // Načti Odorik SIP jména z ENV (ODORIK_SIP_NAME_1, ODORIK_SIP_NAME_2, ...)
-        const sipNames: string[] = [];
-        let i = 1;
-        while (true) {
-            const name = process.env[`ODORIK_SIP_NAME_${i}`];
-            if (!name) break;
-            sipNames.push(name);
-            i++;
-        }
+        // Načti Odorik SIP jména ze sdílené utility (stejný zdroj jako /odorik-config)
+        const sipNames = odorikService.getActiveSipNames();
 
         if (sipNames.length === 0) {
             throw new BadRequestError('Žádná ODORIK_SIP_NAME_X jména nejsou nakonfigurována');
@@ -480,36 +461,23 @@ export const startOdorikCalling = async (req: Request, res: Response, next: Next
 
         console.log(`📞 Worker SIP jména (${actualWorkers}):`, sipNames.slice(0, actualWorkers));
 
-        // Načti leady - respektuj statusFilter jako u Twilio
+        // Načti leady - stejná logika jako Twilio /start
         let leads;
         if (leadIds && leadIds.length > 0) {
             const result = await pool.query(
                 `SELECT id, company_name, contact_person, phone
                  FROM leads
-                 WHERE id = ANY($1) AND status = $2 AND assigned_to = $3`,
-                [leadIds, statusFilter, activeAgentId]
+                 WHERE id = ANY($1) AND status = 'NOVY' AND assigned_to = $2`,
+                [leadIds, activeAgentId]
             );
             leads = result.rows;
         } else {
-            // Použij statusFilter při hledání leadů
-            const result = await pool.query(
-                `SELECT id, company_name, contact_person, phone
-                 FROM leads
-                 WHERE status = $1 
-                   AND assigned_to = $2
-                   AND (blacklisted IS NULL OR blacklisted = false)
-                 ORDER BY created_at ASC
-                 LIMIT $3`,
-                [statusFilter, activeAgentId, maxCalls]
-            );
-            leads = result.rows;
+            leads = await callOrchestrator.getLeadsForCalling(activeAgentId, maxCalls);
         }
 
-        if (leads.length === 0) {
-            throw new BadRequestError(`Žádné leady k volání (status: ${statusFilter})`);
-        }
+        if (leads.length === 0) throw new BadRequestError('Žádné leady k volání');
 
-        console.log(`✅ Found ${leads.length} leads to call (${actualWorkers} workers, batch: "${displayBatchName}")`);
+        console.log(`✅ Found ${leads.length} leads to call (${actualWorkers} workers)`);
 
         // Rozděl leady mezi workery (round-robin)
         const workerLeads: any[][] = Array.from({ length: actualWorkers }, () => []);
@@ -523,7 +491,7 @@ export const startOdorikCalling = async (req: Request, res: Response, next: Next
 
         // Spusť paralelní workery
         setImmediate(async () => {
-            console.log(`🎯 Starting ${actualWorkers} parallel Odorik workers for batch "${displayBatchName}"...`);
+            console.log(`🎯 Starting ${actualWorkers} parallel Odorik workers...`);
 
             const workerPromises = workerLeads.map((chunk, workerIndex) => {
                 const sipName = sipNames[workerIndex];
@@ -569,13 +537,12 @@ export const startOdorikCalling = async (req: Request, res: Response, next: Next
             });
 
             await Promise.all(workerPromises);
-            console.log(`🎉 All Odorik workers completed! Batch: "${displayBatchName}"`);
+            console.log(`🎉 All Odorik workers completed!`);
         });
 
         res.status(200).json({
             success: true,
             message: `Odorik kampaň spuštěna: ${actualWorkers} workerů, ${leads.length} leadů`,
-            batchName: displayBatchName,
             queuedLeads: leads.length,
             aiAgentId: activeAgentId,
             agentName: agentCheck.rows[0].full_name,

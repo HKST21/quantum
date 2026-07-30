@@ -34,6 +34,29 @@ export class OdorikService {
     }
 
     /**
+     * Vrátí seznam aktivně nakonfigurovaných Odorik SIP jmen z ENV.
+     * Čte ODORIK_SIP_NAME_1, _2, _3... dokud nenarazí na mezeru.
+     *
+     * JEDINÝ zdroj pravdy pro to, kolik Odorik workerů je k dispozici.
+     * Používá se jak v GET /odorik-config endpointu (pro frontend),
+     * tak v startOdorikCalling (pro samotné spuštění dávky).
+     *
+     * Do ENV se smí dávat POUZE SIP jména schválená Odorik/T-Mobile -
+     * tenhle seznam se bere jako závazný, žádný extra whitelist se nekontroluje.
+     */
+    getActiveSipNames(): string[] {
+        const sipNames: string[] = [];
+        let i = 1;
+        while (true) {
+            const name = process.env[`ODORIK_SIP_NAME_${i}`];
+            if (!name) break;
+            sipNames.push(name);
+            i++;
+        }
+        return sipNames;
+    }
+
+    /**
      * Konvertuje český telefonní číslo do Odorik formátu s prefixem *087.
      *
      * Vstup: '+420703034160' nebo '00420703034160' nebo '703034160'
@@ -143,7 +166,7 @@ export class OdorikService {
     }
 
     /**
-     * Smaže VŠECHNY existující routes na SIP jménu.
+     * Smaže VŠECHNY existující routes na SIP jméně.
      */
     async deleteAllRoutes(sipName: string): Promise<void> {
         try {
