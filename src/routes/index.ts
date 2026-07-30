@@ -7,7 +7,7 @@ import invoiceDataRoutes from './invoiceData.routes';
 import leadsImportRoutes from './leadsImport.routes';
 import aiCallsRoutes from '../aiagent/routes/aiCalls.routes';
 import batchCallsRoutes from '../aiagent/routes/batchCalls.routes';
-
+import alertsRoutes from './alerts.routes';
 const router = Router();
 
 router.use('/auth', authRoutes);
@@ -18,6 +18,7 @@ router.use('/leads', invoiceDataRoutes);
 router.use('/leads', leadsImportRoutes);
 router.use('/ai-calls', aiCallsRoutes);
 router.use('/ai-calls', batchCallsRoutes);
+router.use('/alerts', alertsRoutes);
 
 router.get('/health', (_req, res) => {
     res.status(200).json({
