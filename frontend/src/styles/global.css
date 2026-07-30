@@ -811,3 +811,225 @@ audio {
 .mt-16 { margin-top: 16px; }
 
 .w-full { width: 100%; }
+
+/* ============================================================================
+   NOTIFICATION BELL + MAIN HEADER
+   Přidat NA KONEC souboru src/styles/global.css.
+   Nemění žádné existující styly.
+   ============================================================================ */
+
+/* Top header nad main-content */
+.main-header {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    padding: 12px 24px;
+    background: #fff;
+    border-bottom: 1px solid var(--gray-200, #e5e7eb);
+    position: sticky;
+    top: 0;
+    z-index: 50;
+}
+
+.main-header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* Notification Bell Wrapper */
+.notification-bell-wrapper {
+    position: relative;
+}
+
+/* Bell button */
+.notification-bell {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 8px;
+    border-radius: 8px;
+    position: relative;
+    transition: background 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.notification-bell:hover {
+    background: var(--gray-100, #f3f4f6);
+}
+
+.notification-bell .bell-icon {
+    font-size: 20px;
+    filter: grayscale(1);
+    opacity: 0.6;
+    transition: all 0.15s;
+}
+
+.notification-bell.has-alerts .bell-icon {
+    filter: none;
+    opacity: 1;
+    animation: bell-shake 1.5s ease-in-out infinite;
+}
+
+/* Bell shake animation když jsou aktivní alerty */
+@keyframes bell-shake {
+    0%, 100% { transform: rotate(0deg); }
+    10% { transform: rotate(-10deg); }
+    20% { transform: rotate(10deg); }
+    30% { transform: rotate(-10deg); }
+    40% { transform: rotate(0deg); }
+}
+
+/* Badge s počtem */
+.bell-badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    background: #dc2626;
+    color: white;
+    border-radius: 10px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    box-shadow: 0 0 0 2px white;
+}
+
+/* Dropdown panel */
+.notification-dropdown {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: 380px;
+    max-height: 500px;
+    background: white;
+    border: 1px solid var(--gray-200, #e5e7eb);
+    border-radius: 12px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.notification-dropdown-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--gray-200, #e5e7eb);
+    background: var(--gray-50, #f9fafb);
+}
+
+.notification-dropdown-header strong {
+    font-size: 14px;
+    color: var(--gray-800, #1f2937);
+}
+
+.notification-resolve-all {
+    background: transparent;
+    border: 1px solid var(--gray-300, #d1d5db);
+    color: var(--gray-700, #374151);
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.15s;
+}
+
+.notification-resolve-all:hover {
+    background: var(--gray-100, #f3f4f6);
+    border-color: var(--gray-400, #9ca3af);
+}
+
+/* Seznam alertů */
+.notification-dropdown-list {
+    overflow-y: auto;
+    max-height: 420px;
+    padding: 8px;
+}
+
+.notification-empty {
+    text-align: center;
+    padding: 32px 16px;
+    color: var(--gray-400, #9ca3af);
+    font-size: 14px;
+}
+
+.notification-item {
+    background: var(--gray-50, #f9fafb);
+    border: 1px solid var(--gray-200, #e5e7eb);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 8px;
+    position: relative;
+    border-left-width: 3px;
+}
+
+.notification-item.severity-error {
+    border-left-color: #dc2626;
+    background: #fef2f2;
+}
+
+.notification-item.severity-warning {
+    border-left-color: #f59e0b;
+    background: #fffbeb;
+}
+
+.notification-item.severity-info {
+    border-left-color: #3b82f6;
+    background: #eff6ff;
+}
+
+.notification-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.notification-item-type {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--gray-600, #4b5563);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.notification-item-time {
+    font-size: 11px;
+    color: var(--gray-400, #9ca3af);
+}
+
+.notification-item-message {
+    font-size: 13px;
+    color: var(--gray-800, #1f2937);
+    line-height: 1.4;
+    margin-bottom: 8px;
+    word-break: break-word;
+}
+
+.notification-item-resolve {
+    background: white;
+    border: 1px solid var(--gray-300, #d1d5db);
+    color: var(--gray-700, #374151);
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.15s;
+}
+
+.notification-item-resolve:hover {
+    background: var(--gray-100, #f3f4f6);
+    border-color: var(--gray-400, #9ca3af);
+}

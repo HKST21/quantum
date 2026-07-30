@@ -1,6 +1,7 @@
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import NotificationBell from './NotificationBell';
 
 interface LayoutProps {
     children: React.ReactNode;
@@ -56,6 +57,14 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             </aside>
 
             <main className="main-content">
+                {/* Top header s notification bell vpravo */}
+                <header className="main-header">
+                    <div className="main-header-right">
+                        <NotificationBell />
+                    </div>
+                </header>
+
+                {/* Původní obsah stránek beze změny */}
                 {children}
             </main>
         </div>
