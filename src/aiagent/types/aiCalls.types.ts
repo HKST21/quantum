@@ -10,10 +10,23 @@ export type AICallOutcome =
     | 'CHCE_KONTAKT_AI'
     | 'NEKONTAKTOVAT'
     | 'NEZVEDL_TELEFON'
+    | 'POLOZIL_TELEFON'   // NOVÉ — parita s VF-CRM, vyžaduje DB migraci
     | 'ODKLADA';
 
+// NOVÉ — dvě nezávislé osy, defaultně přesně dnešní chování
+export type CallEngine = 'openai' | 'gemini';
+export type CallProvider = 'twilio' | 'odorik';
+
 export interface ConversationOutcome {
-    outcome: 'interested' | 'not_interested' | 'callback' | 'aggressive' | 'already_tmobile' | 'wrong_person' | 'no_answer';
+    outcome:
+        | 'interested'
+        | 'not_interested'
+        | 'callback'
+        | 'aggressive'
+        | 'already_tmobile'
+        | 'wrong_person'
+        | 'no_answer'
+        | 'hung_up';           // NOVÉ — zákazník fyzicky zvedl a zavěsil bez jasného výsledku
     transcript: string;
     aiNotes: string;
     duration: number;
@@ -33,6 +46,7 @@ export interface AICallLog {
     startedAt: Date | null;
     completedAt: Date | null;
     createdAt: Date;
+    engine?: CallEngine;       // NOVÉ
 }
 
 export interface TwilioCallResponse {
@@ -52,6 +66,10 @@ export interface TwilioCallStatus {
 export interface StartAICallingRequest {
     leadIds?: string[];
     maxCalls?: number;
+    agentUserId?: string;
+    workers?: number;
+    provider?: CallProvider;   // NOVÉ — default 'twilio'
+    engine?: CallEngine;       // NOVÉ — default 'openai'
 }
 
 export interface StartAICallingResponse {

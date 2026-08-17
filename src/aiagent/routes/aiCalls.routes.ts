@@ -3,14 +3,16 @@ import {
     startAICalling, stopAICalling, getAICallStatus,
     getAICallLogs, getAICallLogDetail,
     getTwiML, handleStatusCallback, handleRecordingCallback,
-    startOdorikTestCall, startOdorikCalling, getOdorikConfig
+    startOdorikTestCall, getOdorikConfig
 } from '../controllers/aiCalls.controller';
 import { authenticate } from '../../middleware/authenticate';
 import { authorize } from '../../middleware/authorize';
 
 const router = Router();
 
-// Admin routes
+// ⚠️ SJEDNOCENO — /start teď přijímá i provider ('twilio'|'odorik') a
+// engine ('openai'|'gemini') v body. Starý /start-odorik-calling byl
+// odstraněn.
 router.post('/start', authenticate, authorize(['ADMIN']), startAICalling);
 router.post('/stop', authenticate, authorize(['ADMIN']), stopAICalling);
 router.get('/status', authenticate, authorize(['ADMIN']), getAICallStatus);
@@ -24,10 +26,6 @@ router.post('/webhook/recording-callback', handleRecordingCallback);
 
 router.post('/test-odorik', authenticate, authorize(['ADMIN']), startOdorikTestCall);
 
-// Odorik konfigurace pro frontend (aktivní SIP jména + maxWorkers)
 router.get('/odorik-config', authenticate, authorize(['ADMIN']), getOdorikConfig);
-
-// PRODUKČNÍ Odorik paralelní volání
-router.post('/start-odorik-calling', authenticate, authorize(['ADMIN']), startOdorikCalling);
 
 export default router;

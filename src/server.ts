@@ -12,6 +12,7 @@ import pool, { testConnection } from './db/pool';
 import routes from './routes';
 import { AppError } from './utils/errors';
 import { callHandler } from './aiagent/websockets/callHandler';
+import { geminiCallHandler } from './aiagent/websockets/geminiCallHandler'; // ← NOVÉ
 
 dotenv.config();
 
@@ -21,6 +22,9 @@ const server = http.createServer(app);
 
 // ============================================
 // WEBSOCKET SERVER
+//
+// ⚠️ ZMĚNA — SELECT teď navíc čte acl.engine a podle něj routuje na
+// geminiCallHandler nebo callHandler (OpenAI, beze změny).
 // ============================================
 
 const wss = new WebSocketServer({
@@ -54,7 +58,7 @@ wss.on('connection', (ws, _req) => {
 
                 try {
                     const result = await pool.query(
-                        `SELECT l.id, l.company_name, l.contact_person, l.phone
+                        `SELECT l.id, l.company_name, l.contact_person, l.phone, acl.engine
                          FROM leads l
                          INNER JOIN ai_call_logs acl ON l.id = acl.lead_id
                          WHERE acl.call_sid = $1`,
@@ -69,19 +73,20 @@ wss.on('connection', (ws, _req) => {
 
                     const lead = result.rows[0];
 
-                    console.log('✅ Lead loaded:', { id: lead.id, company: lead.company_name });
+                    console.log('✅ Lead loaded:', { id: lead.id, company: lead.company_name, engine: lead.engine });
 
-                    await callHandler.handleConnection(
-                        ws,
-                        callSid,
-                        lead.id,
-                        {
-                            companyName: lead.company_name,
-                            contactPerson: lead.contact_person,
-                            phone: lead.phone,
-                        },
-                        streamSid
-                    );
+                    const leadData = {
+                        companyName: lead.company_name,
+                        contactPerson: lead.contact_person,
+                        phone: lead.phone,
+                    };
+
+                    if (lead.engine === 'gemini') {
+                        console.log('🔀 [Gemini] Routing to Gemini handler');
+                        await geminiCallHandler.handleConnection(ws, callSid, lead.id, leadData, streamSid);
+                    } else {
+                        await callHandler.handleConnection(ws, callSid, lead.id, leadData, streamSid);
+                    }
                 } catch (error) {
                     console.error('❌ Failed to load call data:', error);
                     ws.close();
@@ -96,7 +101,7 @@ wss.on('connection', (ws, _req) => {
     ws.on('error', (error) => console.error('❌ WebSocket error:', error));
 });
 
-console.log('✅ WebSocket server initialized on: /api/ai-calls/websocket');
+console.log('✅ WebSocket server initialized on: /api/ai-calls/websocket (OpenAI/Gemini)');
 
 // ============================================
 // TRUST PROXY
@@ -194,7 +199,6 @@ const frontendBuildPath = path.join(__dirname, '..', 'frontend', 'build');
 
 app.use('/crm', express.static(frontendBuildPath));
 
-// React router fallback — všechny /crm/* cesty vrátí index.html
 app.get('/crm/*', (_req: Request, res: Response) => {
     res.sendFile(path.join(frontendBuildPath, 'index.html'));
 });
@@ -268,15 +272,15 @@ const startServer = async () => {
         }
 
         server.listen(PORT, () => {
-            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
             console.log('✅ Quantum CRM Backend Started');
-            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
             console.log(`🚀 Port: ${PORT}`);
             console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
             console.log(`🔌 WebSocket: ws://localhost:${PORT}/api/ai-calls/websocket`);
             console.log(`🤖 AI Calling: /api/ai-calls/*`);
             console.log(`🖥️  Frontend: /crm`);
-            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         });
     } catch (error) {
         console.error('❌ Failed to start server:', error);
@@ -295,11 +299,4 @@ process.on('unhandledRejection', (error) => {
 });
 
 process.on('SIGTERM', () => {
-    server.close(() => { console.log('✅ Server closed'); process.exit(0); });
-});
-
-process.on('SIGINT', () => {
-    server.close(() => { console.log('✅ Server closed'); process.exit(0); });
-});
-
-startServer();
+    server.close(() => {
