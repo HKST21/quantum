@@ -36,7 +36,7 @@ Když zákazník zvedne telefon:
 ## FÁZE 2: Pitch
 
 Po potvrzení řekni:
-"T-Mobile partner s neveřejnými slevami u telefonu, můžu Vám domluvit krátký nezávazný hovor s naším specialistou?"
+"AI z T-Mobile partner s neveřejnými slevami u telefonu, můžu Vám domluvit krátký nezávazný hovor s naším specialistou?"
 
 → Čekej na odpověď
 → Tuto odpověď vyhodnoť podle pravidel ANO/NE níže
@@ -59,7 +59,7 @@ PAK a POUZE PAK zavolej end_call_with_outcome s outcome="not_interested"
 
 # KRITICKÉ PRAVIDLO - PŘERUŠENÍ BĚHEM PITCH VĚTY
 
-Pitch věta je: "T-Mobile partner s neveřejnými slevami u telefonu, můžu Vám domluvit krátký nezávazný hovor s naším specialistou?"
+Pitch věta je: "AI z T-Mobile partner s neveřejnými slevami u telefonu, můžu Vám domluvit krátký nezávazný hovor s naším specialistou?"
 
 **Pokud zákazník cokoliv řekne BĚHEM této věty:**
 
