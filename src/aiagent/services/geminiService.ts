@@ -4,48 +4,64 @@
 // Model: gemini-3.1-flash-live-preview
 // Audio: PCM16 16kHz input, PCM16 24kHz output
 //
-// ⚠️ NOVÉ (17.8.2026) — PREWARM PODPORA (jen pro Gemini, nedotýká se
-// OpenAI cesty vůbec):
+// ⚠️ NOVÉ (17.8.2026) — Eva Gemini V2 (agent dab796fa-bf16-4f99-812c-
+// 601a031049ce) je teď VÝCHOZÍ Gemini prompt (fallback). Vychází z v1,
+// ale FÁZE 1+2 spojené do jedné úvodní věty a edge cases zjednodušené
+// na minimum — cíl: kratší systémový prompt → podle zjištění z 17.8.
+// (latence prvního turnu u gemini-3.1-flash-live-preview škáluje s
+// velikostí systémových instrukcí) rychlejší a stabilnější kick-start.
+// v1 a v5 zůstávají dostupné přes svá explicitní agentUserId, jen už
+// nejsou fallback.
+//
+// PREWARM PODPORA (jen pro Gemini, nedotýká se OpenAI cesty vůbec):
 //   Session lze založit s options.deferKickstart=true — provede se
 //   celý setup handshake (WS open, setup zpráva, setupComplete), ale
 //   NEPOŠLE se automaticky kick-start. Volající (geminiCallHandler)
 //   pak zavolá triggerKickstart() ve chvíli, kdy zákazník reálně
 //   zvedne telefon. Cíl: přesunout nákladné/pomalé zpracování velkého
-//   systémového promptu (typicky ~3s u prvního turnu na tomhle modelu
-//   v telefonním nasazení) do doby vyzvánění, kdy na to zákazník ještě
-//   nečeká — takže samotný kick-start turn po zvednutí je rychlejší.
-//   Podle Live API dokumentace se účtuje za TURN, ne za otevřenou
-//   session — dokud se neodešle kick-start, neproběhl žádný turn,
-//   takže prewarm hovorů, které nikdo nezvedne, by neměl stát nic
-//   navíc.
+//   systémového promptu do doby vyzvánění, kdy na to zákazník ještě
+//   nečeká. Podle Live API dokumentace se účtuje za TURN, ne za
+//   otevřenou session — dokud se neodešle kick-start, neproběhl žádný
+//   turn, takže prewarm hovorů, které nikdo nezvedne, by neměl stát
+//   nic navíc.
 //
-// ⚠️ NOVÉ (17.8.2026) — kvalitativní úpravy po analýze produkční dávky
-// (viz starší komentáře v historii souboru): voice Zephyr→Vindemiatrix
-// (Gentle), prefix_padding_ms 300→700, input suppression shield proti
-// falešnému přerušení pozdravu, KICKSTART_DELAY_MS 1000→300 (shield
-// teď řeší ochranu proti překryvu, takže není třeba čekat celou vteřinu
-// před odesláním kick-startu).
+// Kvalitativní úpravy po analýze produkční dávky (viz historie
+// souboru): voice Zephyr→Vindemiatrix (Gentle), prefix_padding_ms
+// 300→700, input suppression shield proti falešnému přerušení
+// pozdravu, KICKSTART_DELAY_MS 600ms (bezpečnostní rezerva — v testu
+// fungovalo i 300ms bez problému, ale ponecháváme rezervu).
 //
 // Jediné věcné rozdíly oproti VF-CRM verzi:
-//   1) Prompt vychází z eva_v5 (T-Mobile), ne z Petra v2 (Vodafone).
+//   1) Prompty vychází z eva_v1/v2/v5 (T-Mobile), ne z Petra (Vodafone).
 //   2) Eva NENÍ personalizovaná jménem/firmou — buildPrompt() nebere
 //      leadData args.
-//   3) Výběr promptu podle agentUserId (GEMINI_AGENT_PROMPTS mapa).
+//   3) Výběr promptu podle agentUserId (GEMINI_AGENT_PROMPTS mapa),
+//      fallback na V2.
 //   4) GeminiOutcome enum používá 'already_tmobile' místo
 //      'already_vodafone'.
 // ============================================
 
 import WebSocket from 'ws';
 import { twilioToGemini } from './audioConverter';
+import { evaV1GeminiPrompt } from '../prompts/eva_v1_gemini';
+import { evaV2GeminiPrompt } from '../prompts/eva_v2_gemini';
 import { evaV5GeminiPrompt } from '../prompts/eva_v5_gemini';
 
 const GEMINI_MODEL = 'gemini-3.1-flash-live-preview';
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`;
 const SETUP_TIMEOUT_MS = 15000;
-const KICKSTART_DELAY_MS = 300;
+
+// ⚠️ ZMĚNA (17.8.2026): zpět na 600ms jako bezpečnostní rezerva.
+const KICKSTART_DELAY_MS = 600;
+
 const INPUT_SUPPRESSION_MAX_MS = 4000;
 
+// ── Per-agent výběr Gemini promptu. Eva Gemini V2 je teď VÝCHOZÍ
+// (fallback) — viz getPromptForAgent níže. v1 a v5 zůstávají dostupné
+// jen přes svoje explicitní UUID.
 const GEMINI_AGENT_PROMPTS: Record<string, () => string> = {
+    '53c65ca7-68bc-4948-83e5-35a64c17f0fb': evaV1GeminiPrompt,
+    'dab796fa-bf16-4f99-812c-601a031049ce': evaV2GeminiPrompt, // Eva Gemini V2
     'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9': evaV5GeminiPrompt,
 };
 
@@ -57,10 +73,6 @@ export interface GeminiOutcome {
 }
 
 export interface CreateSessionOptions {
-    // ⚠️ NOVÉ (17.8.2026) — true = pošli setup, ale NEPOSÍLEJ kick-start
-    // automaticky. Použij pro prewarm (session založená během vyzvánění,
-    // ještě nevíme, jestli zákazník zvedne). Kick-start se pak spustí
-    // explicitně přes triggerKickstart(), až/pokud zákazník zvedne.
     deferKickstart?: boolean;
 }
 
@@ -77,7 +89,6 @@ export class GeminiService {
     private suppressInputUntilFirstAudio = false;
     private inputSuppressionTimeoutHandle: NodeJS.Timeout | null = null;
 
-    // ⚠️ NOVÉ (17.8.2026) — prewarm stav
     private deferKickstart = false;
     private kickstartSent = false;
 
@@ -100,9 +111,11 @@ export class GeminiService {
         const promptFn = agentUserId ? GEMINI_AGENT_PROMPTS[agentUserId] : undefined;
         if (!promptFn) {
             if (agentUserId) {
-                console.warn(`⚠️ [Gemini] No Gemini prompt for agent ${agentUserId}, falling back to v5`);
+                console.warn(`⚠️ [Gemini] No Gemini prompt for agent ${agentUserId}, falling back to v2`);
             }
-            return evaV5GeminiPrompt();
+            // ⚠️ ZMĚNA (17.8.2026): fallback v5 → v2 (Eva Gemini V2 je
+            // teď výchozí Gemini prompt).
+            return evaV2GeminiPrompt();
         }
         return promptFn();
     }
@@ -132,9 +145,6 @@ export class GeminiService {
         console.log(`🛡️ [Gemini${this.callTag ? ' ' + this.callTag : ''}] Input suppression shield zrušen — první audio od Evy dorazilo`);
     }
 
-    // ⚠️ NOVÉ (17.8.2026) — sjednocené odeslání kick-start zprávy,
-    // používá jak automatický (non-prewarm) tak explicitní (prewarm
-    // triggerKickstart) flow. Idempotentní — druhé volání je no-op.
     private sendKickstartNow(): void {
         if (this.kickstartSent) return;
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -155,14 +165,6 @@ export class GeminiService {
         this.startInputSuppression();
     }
 
-    /**
-     * ⚠️ NOVÉ (17.8.2026) — explicitní spuštění kick-startu pro
-     * prewarmovanou session (createSession volaná s deferKickstart:
-     * true). Volá geminiCallHandler ve chvíli, kdy zákazník reálně
-     * zvedne telefon (Twilio Media Stream se připojí). Idempotentní —
-     * pokud už kick-start odešel nebo je naplánovaný, nic dalšího
-     * nedělá.
-     */
     triggerKickstart(): void {
         if (this.kickstartSent || this.kickstartTimeoutHandle) return;
         this.kickstartTimeoutHandle = setTimeout(() => {
@@ -272,9 +274,6 @@ export class GeminiService {
                         this.isReady = true;
                         this.flushAudioQueue();
 
-                        // ⚠️ NOVÉ (17.8.2026) — u prewarmu se kick-start
-                        // NESPOUŠTÍ automaticky, čeká se na explicitní
-                        // triggerKickstart() z geminiCallHandler.
                         if (!this.deferKickstart) {
                             this.kickstartTimeoutHandle = setTimeout(() => {
                                 this.kickstartTimeoutHandle = null;
@@ -405,7 +404,7 @@ export class GeminiService {
             clientContent: {
                 turns: [{
                     role: 'user',
-                    parts: [{ text: '(Zákazník zavěsil. Hovor skončil. Nemluv — okamžitě zavolej end_call_with_outcome podle sekce ZÁKAZNÍK ZAVĚSIL: souhlas se zasláním ceníku → interested i bez počtu čísel; odmítnutí → not_interested; nejasný průběh → no_answer.)' }],
+                    parts: [{ text: '(Zákazník zavěsil. Hovor skončil. Nemluv — okamžitě zavolej end_call_with_outcome podle sekce ZÁKAZNÍK ZAVĚSIL: souhlas se zasláním ceníku → interested; odmítnutí → not_interested; nejasný průběh → no_answer.)' }],
                 }],
                 turnComplete: true,
             },

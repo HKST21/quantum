@@ -22,6 +22,8 @@ interface AgentOption {
 }
 
 const AGENTS: AgentOption[] = [
+
+
     {
         id: '53c65ca7-68bc-4948-83e5-35a64c17f0fb',
         name: 'Eva V1',
@@ -29,6 +31,14 @@ const AGENTS: AgentOption[] = [
         pitch: 'Volám z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?',
         successLine: 'Skvěle! Kolega se ozve v krátkém hovoru a připraví Vám ho na míru. Hezký den!',
         engines: ['openai', 'gemini'],
+    },
+    {
+        id: 'dab796fa-bf16-4f99-812c-601a031049ce',
+        name: 'Eva Gemini V2',
+        description: 'Zjednodušený VIP ceník (pouze Gemini)',
+        pitch: 'Krásný den, volám jako AI z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?',
+        successLine: 'Skvěle! Kolega se ozve v krátkém hovoru a připraví Vám ho na míru. Hezký den!',
+        engines: ['gemini'],
     },
     {
         id: 'aeec78ff-a86b-4cab-b33a-adeb7c94f08e',
