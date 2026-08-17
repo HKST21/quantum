@@ -208,7 +208,7 @@ export class GeminiService {
                             speech_config: {
                                 voice_config: {
                                     prebuilt_voice_config: {
-                                        voice_name: 'Sulafat',
+                                        voice_name: 'Achernar',
                                     },
                                 },
                                 language_code: 'cs-CZ',
