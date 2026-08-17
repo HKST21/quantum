@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
     getBatchStatus, getTwilioNumber, getAvgDuration, getOdorikConfig,
-    startAICalling, startOdorikCalling, BatchStatus, AvgDuration, OdorikConfig,
+    startAICalling, BatchStatus, AvgDuration, OdorikConfig, CallProvider, CallEngine,
 } from '../api';
 
 type CallingStep = 'setup' | 'reauth' | 'calling' | 'done';
-type CallingProvider = 'twilio' | 'odorik';
 
 interface AgentOption {
     id: string;
@@ -14,6 +13,12 @@ interface AgentOption {
     pitch: string;
     secondQuestion?: string;
     successLine: string;
+    // ⚠️ NOVÉ — pro které enginy má tenhle agent hotový prompt.
+    // V2–V4 mají zatím jen OpenAI verzi (eva_v2–v4), Gemini ekvivalenty
+    // ještě nebyly napsané. V1 a V5 mají obě varianty (eva_v1_gemini,
+    // eva_v5_gemini). Až přibudou další Gemini prompty, stačí sem
+    // doplnit 'gemini' do pole engines u příslušného agenta.
+    engines: CallEngine[];
 }
 
 const AGENTS: AgentOption[] = [
@@ -23,6 +28,7 @@ const AGENTS: AgentOption[] = [
         description: 'VIP ceník do SMS',
         pitch: 'Volám z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?',
         successLine: 'Skvěle! Kolega se ozve v krátkém hovoru a připraví Vám ho na míru. Hezký den!',
+        engines: ['openai', 'gemini'],
     },
     {
         id: 'aeec78ff-a86b-4cab-b33a-adeb7c94f08e',
@@ -30,6 +36,7 @@ const AGENTS: AgentOption[] = [
         description: 'Neveřejné slevy — specialista',
         pitch: 'T-Mobile partner s neveřejnými slevami u telefonu, můžu Vám domluvit krátký nezávazný hovor s naším specialistou?',
         successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
+        engines: ['openai'],
     },
     {
         id: 'e7a469bb-4783-4f96-b961-03dd503e5bfa',
@@ -37,6 +44,7 @@ const AGENTS: AgentOption[] = [
         description: 'Neveřejné slevy — kolega z týmu',
         pitch: 'T-Mobile partner u telefonu, volám kvůli neveřejným slevám. Můžu Vám domluvit krátký hovor s kolegou z našeho týmu?',
         successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
+        engines: ['openai'],
     },
     {
         id: 'f4adb349-70c3-4e63-8670-81f6c177f61d',
@@ -44,6 +52,7 @@ const AGENTS: AgentOption[] = [
         description: 'Neveřejné slevy — kolega z masa a kostí',
         pitch: 'T-Mobile partner u telefonu, volám kvůli neveřejným slevám. Můžu Vám domluvit krátký hovor s kolegou z masa a kostí?',
         successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
+        engines: ['openai'],
     },
     {
         id: 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9',
@@ -52,6 +61,7 @@ const AGENTS: AgentOption[] = [
         pitch: 'Volám z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?',
         secondQuestion: 'Děkuji! Poslední dotaz, jaký počet telefonních čísel máte aktuálně u svého operátora?',
         successLine: 'Děkuji za odpověď! Kolega se ozve v krátkém hovoru a připraví Vám ceník na míru. Hezký den!',
+        engines: ['openai', 'gemini'],
     },
 ];
 
@@ -65,9 +75,15 @@ const TWILIO_WORKER_PHONES = [
     '+420228811306',
 ];
 
+const ENGINE_LABELS: Record<CallEngine, { label: string; icon: string }> = {
+    openai: { label: 'OpenAI', icon: '🧠' },
+    gemini: { label: 'Gemini', icon: '✨' },
+};
+
 const Calling: React.FC = () => {
     const [step, setStep] = useState<CallingStep>('setup');
-    const [provider, setProvider] = useState<CallingProvider>('twilio');
+    const [provider, setProvider] = useState<CallProvider>('twilio');
+    const [engine, setEngine] = useState<CallEngine>('openai');
     const [selectedAgent, setSelectedAgent] = useState<AgentOption>(AGENTS[0]);
     const [maxCalls, setMaxCalls] = useState<number>(100);
     const [workers, setWorkers] = useState<number>(1);
@@ -85,8 +101,22 @@ const Calling: React.FC = () => {
 
     const pollRef = useRef<NodeJS.Timeout | null>(null);
 
+    // ⚠️ NOVÉ — agenti dostupní pro aktuálně vybraný engine. Gemini má
+    // zatím prompt jen pro V1 a V5 (viz AGENTS.engines výše).
+    const availableAgents = AGENTS.filter(a => a.engines.includes(engine));
+
+    // Když engine přepneš na Gemini a aktuálně vybraný agent Gemini
+    // prompt nemá (V2–V4), automaticky přeskoč na první dostupný —
+    // ať nikdy nejde spustit dávka s agentem, který pro daný engine
+    // nemá připravený prompt (backend by jinak tiše spadl na V5 fallback).
+    useEffect(() => {
+        if (!availableAgents.find(a => a.id === selectedAgent.id)) {
+            setSelectedAgent(availableAgents[0]);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [engine]);
+
     // Odorik config se načítá jednou při mountu - nezávisí na vybraném agentovi.
-    // Je to jediný zdroj pravdy pro to, kolik Odorik workerů (schválených SIP jmen) je k dispozici.
     useEffect(() => {
         const loadOdorikConfig = async () => {
             try {
@@ -110,8 +140,6 @@ const Calling: React.FC = () => {
 
     const odorikUnavailable = provider === 'odorik' && odorikConfig !== null && odorikConfig.maxWorkers === 0;
 
-    // Ochrana proti tomu, aby zůstal vybraný počet workerů vyšší, než kolik
-    // aktuální provider reálně nabízí (např. přepnutí z Twilio 5 workerů na Odorik 1).
     useEffect(() => {
         if (maxWorkersAvailable > 0 && workers > maxWorkersAvailable) {
             setWorkers(maxWorkersAvailable);
@@ -194,7 +222,7 @@ const Calling: React.FC = () => {
     };
 
     const handleAgentChange = (agentId: string) => {
-        setSelectedAgent(AGENTS.find(a => a.id === agentId) || AGENTS[0]);
+        setSelectedAgent(availableAgents.find(a => a.id === agentId) || availableAgents[0]);
     };
 
     const handleReauth = async (e: React.FormEvent) => {
@@ -216,11 +244,8 @@ const Calling: React.FC = () => {
                 return;
             }
 
-            if (provider === 'twilio') {
-                await startAICalling(maxCalls, selectedAgent.id, workers);
-            } else {
-                await startOdorikCalling(maxCalls, selectedAgent.id, workers);
-            }
+            // ⚠️ SJEDNOCENO — jeden endpoint pro Twilio/Odorik i OpenAI/Gemini
+            await startAICalling(maxCalls, selectedAgent.id, workers, provider, engine);
 
             const status = await getBatchStatus(selectedAgent.id);
             setBatchStatus(status);
@@ -269,10 +294,32 @@ const Calling: React.FC = () => {
                         </div>
                         <div className="card-body">
 
+                            {/* ⚠️ NOVÉ — Engine select (OpenAI / Gemini) */}
+                            <div className="form-group">
+                                <label className="form-label">AI Engine</label>
+                                <div style={{ display: 'flex', gap: 8 }}>
+                                    {(Object.keys(ENGINE_LABELS) as CallEngine[]).map((eng) => (
+                                        <button
+                                            key={eng}
+                                            type="button"
+                                            className={`btn ${engine === eng ? 'btn-primary' : 'btn-outline'}`}
+                                            onClick={() => setEngine(eng)}
+                                        >
+                                            {ENGINE_LABELS[eng].icon} {ENGINE_LABELS[eng].label}
+                                        </button>
+                                    ))}
+                                </div>
+                                {engine === 'gemini' && (
+                                    <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
+                                        ℹ️ Gemini je zatím dostupné jen pro Eva V1 a Eva V5.
+                                    </div>
+                                )}
+                            </div>
+
                             <div className="form-group">
                                 <label className="form-label">AI Agent</label>
                                 <select className="form-select" value={selectedAgent.id} onChange={(e) => handleAgentChange(e.target.value)}>
-                                    {AGENTS.map(agent => (
+                                    {availableAgents.map(agent => (
                                         <option key={agent.id} value={agent.id}>
                                             {agent.name} — {agent.description}
                                         </option>
@@ -330,6 +377,11 @@ const Calling: React.FC = () => {
                                 {odorikUnavailable && (
                                     <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 6 }}>
                                         ⚠️ Odorik momentálně nedostupný — žádné SIP jméno není schváleno.
+                                    </div>
+                                )}
+                                {provider === 'odorik' && (
+                                    <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
+                                        ℹ️ Odorik má prodlevu ~1,5s před vytočením (propagace routy) a 5–15s pauzu mezi hovory.
                                     </div>
                                 )}
                             </div>
@@ -430,6 +482,7 @@ const Calling: React.FC = () => {
                             <div className="alert alert-warning mb-16">
                                 <div>
                                     Poskytovatel: <strong>{provider === 'twilio' ? '☎️ Twilio (pevná linka)' : '📱 Odorik (mobilní)'}</strong><br />
+                                    Engine: <strong>{ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label}</strong><br />
                                     Agent: <strong>{selectedAgent.name}</strong> — {selectedAgent.description}<br />
                                     Počet hovorů: <strong>{maxCalls.toLocaleString('cs-CZ')}</strong><br />
                                     Workeři: <strong>{workers}×</strong> <span style={{ fontFamily: 'monospace', fontSize: 12 }}>({workerLabels.slice(0, workers).join(', ')})</span><br />
@@ -458,7 +511,7 @@ const Calling: React.FC = () => {
             {step === 'calling' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div style={{ background: 'var(--primary-light)', border: '1px solid #bfdbfe', borderRadius: 'var(--radius)', padding: '8px 14px', fontSize: 13, color: 'var(--primary)', fontWeight: 600, marginBottom: 12 }}>
-                        🤖 {selectedAgent.name} · {provider === 'twilio' ? '☎️ Twilio' : '📱 Odorik'} · {workers} worker{workers > 1 ? 'y' : ''} · „{selectedAgent.pitch.slice(0, 55)}..."
+                        🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {provider === 'twilio' ? '☎️ Twilio' : '📱 Odorik'} · {workers} worker{workers > 1 ? 'y' : ''} · „{selectedAgent.pitch.slice(0, 55)}..."
                     </div>
                     <div className="live-feed mb-16">
                         <span className="live-dot" />
@@ -496,7 +549,7 @@ const Calling: React.FC = () => {
             {step === 'done' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div className="alert alert-success mb-24" style={{ fontSize: 16 }}>
-                        🎉 Dávka dokončena! Agent: <strong>{selectedAgent.name}</strong>
+                        🎉 Dávka dokončena! Agent: <strong>{selectedAgent.name}</strong> · Engine: <strong>{ENGINE_LABELS[engine].label}</strong>
                         {startedAt && <span style={{ marginLeft: 8, fontSize: 13, opacity: 0.8 }}>· Spuštěno: {startedAt.toLocaleTimeString('cs-CZ')}</span>}
                     </div>
                     <div className="stats-grid mb-24">

@@ -117,6 +117,12 @@ export interface OdorikConfig {
     odorikPhoneNumber: string | null;
 }
 
+// ⚠️ NOVÉ — dvě nezávislé osy, sjednocené do jednoho backend endpointu
+// /ai-calls/start. provider řeší přes co se volá (pevná linka vs.
+// mobilní Odorik), engine řeší kterým AI modelem se hovor vede.
+export type CallProvider = 'twilio' | 'odorik';
+export type CallEngine = 'openai' | 'gemini';
+
 export const getBatchStatus = (agentUserId?: string): Promise<BatchStatus> => {
     const query = agentUserId ? `?agentUserId=${agentUserId}` : '';
     return fetchJson(`/ai-calls/batch-status${query}`);
@@ -150,16 +156,24 @@ export const retryUnanswered = (agentUserId?: string): Promise<{ updated: number
 export const getAvgDuration = (): Promise<AvgDuration> =>
     fetchJson('/ai-calls/avg-duration');
 
-export const startAICalling = (maxCalls: number, agentUserId: string, workers: number = 1): Promise<any> =>
+// ⚠️ SJEDNOCENO — dřív dvě funkce (startAICalling pro Twilio,
+// startOdorikCalling pro Odorik), volající dva různé backend endpointy.
+// Backend teď má jeden /ai-calls/start endpoint s provider + engine
+// parametry, oba s bezpečným defaultem ('twilio'/'openai'). Stará
+// funkce startOdorikCalling byla ODSTRANĚNA — endpoint
+// /ai-calls/start-odorik-calling na backendu už neexistuje, takže
+// pokud na ni v kódu ještě něco odkazuje, nahraď to startAICalling
+// s provider='odorik'.
+export const startAICalling = (
+    maxCalls: number,
+    agentUserId: string,
+    workers: number = 1,
+    provider: CallProvider = 'twilio',
+    engine: CallEngine = 'openai'
+): Promise<any> =>
     fetchJson('/ai-calls/start', {
         method: 'POST',
-        body: JSON.stringify({ maxCalls, agentUserId, workers }),
-    });
-
-export const startOdorikCalling = (maxCalls: number, agentUserId: string, workers: number = 1): Promise<any> =>
-    fetchJson('/ai-calls/start-odorik-calling', {
-        method: 'POST',
-        body: JSON.stringify({ maxCalls, agentUserId, workers }),
+        body: JSON.stringify({ maxCalls, agentUserId, workers, provider, engine }),
     });
 
 export const getAgents = (): Promise<{ users: Agent[] }> =>
