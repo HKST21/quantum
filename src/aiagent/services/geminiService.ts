@@ -9,34 +9,84 @@
 // implementace — beze změny, protože jde o Gemini Live API chování
 // nezávislé na obchodním obsahu.
 //
+// ⚠️ NOVÉ (17.8.2026) — dvě kvalitativní úpravy po analýze produkční
+// dávky, kde se objevoval vysoký podíl POLOZIL_TELEFON s poznámkami
+// typu "zavěsil uprostřed věty" / "zavěsil hned po pozdravu" / "uvedl,
+// že mě neslyší a že jsem automat":
+//
+//   1) VOICE ZMĚNA: 'Zephyr' (charakteristika "Bright" — jasný,
+//      energický, může znít útočně/naléhavě) → 'Achernar'
+//      (charakteristika "Soft"). Obě jsou ženské hlasy, takže charakter
+//      Evy zůstává stejný, jen měkčí tón.
+//
+//   2) INPUT SUPPRESSION SHIELD + prefix_padding_ms 300→700: řeší
+//      zdokumentovaný bug u gemini-3.1-flash-live-preview v telefonním
+//      nasazení (Twilio MediaStreams) — první "turn" (úvodní pozdrav)
+//      trvá řádově 3s od zahájení generování po první audio chunk,
+//      zatímco další turny jsou rychlé (~500ms). V té úvodní mezeře
+//      zákazníkovo "Haló?" spustí VAD, který myslí, že ho zákazník
+//      přerušil, a Gemini restartuje pozdrav od začátku — což zní jako
+//      zaseknutí/opakování a zákazníka to zmate natolik, že zavěsí
+//      nebo řekne "nerozumím vám" / "jste automat".
+//      Řešení (odpovídá veřejně zdokumentovanému workaroundu pro
+//      stejný model+scénář): od okamžiku odeslání kick-start instrukce
+//      až do příchodu PRVNÍHO audio chunku od Gemini (s pojistkou
+//      INPUT_SUPPRESSION_MAX_MS) se příchozí audio od zákazníka
+//      ZAHAZUJE, ne posílá do Gemini — takže zákazníkovo "Haló?" v té
+//      zranitelné mezeře nemá šanci spustit falešné přerušení. Jakmile
+//      Eva reálně začne mluvit, shield se zruší a normální barge-in
+//      (zákazník smí Evu přerušit) funguje jako dřív, beze změny.
+//      prefix_padding_ms 700 (dřív 300) navíc filtruje krátké šumy na
+//      telefonní lince i po zbytek hovoru, aby nespouštěly falešné
+//      "start of speech" detekce.
+//
 // Jediné věcné rozdíly oproti VF-CRM verzi:
 //   1) Prompt vychází z eva_v5 (T-Mobile), ne z Petra v2 (Vodafone).
 //   2) Eva NENÍ personalizovaná jménem/firmou (stejně jako u OpenAI
 //      verze v openAIService.ts) — buildPrompt() nebere leadData args.
 //   3) Výběr promptu podle agentUserId (GEMINI_AGENT_PROMPTS mapa),
-//      analogicky k AGENT_PROMPTS v openAIService.ts. Zatím obsahuje
-//      jen jednu položku (v5) — všechny ostatní/neznámé agentUserId
-//      spadnou na stejný v5 prompt jako fallback.
+//      analogicky k AGENT_PROMPTS v openAIService.ts.
 //   4) GeminiOutcome enum používá 'already_tmobile' místo
 //      'already_vodafone' (a stejně tak function-call tool declarace).
+//
+// ⚠️ Historie oprav (převzato z VF-CRM, viz tamní geminiService.ts):
+//   - input_audio_config se do `setup` NEPOSÍLÁ (Gemini to odmítá,
+//     formát vstupu se určuje mime_type v realtime_input.audio).
+//   - Setup timeout (15s) + error handling ve WS message handleru,
+//     aby se createSession() Promise nikdy nezasekla bez reject/resolve.
+//   - Tool/function call chodí jako top-level msg.toolCall.functionCalls[],
+//     ne vnořené v serverContent.modelTurn.parts (starý dead-code blok
+//     v parts smyčce se nechává jako neškodná záloha).
+//   - Kick-start (1s prodleva po setupComplete): explicitní textový
+//     user turn, ať Petra/Eva zahájí FÁZI 1 bez čekání na první
+//     VAD-detekovaný turn (VAD turn thrashing bug na preview modelu).
+//   - language_code: 'cs-CZ' v speech_config — zmírnění garbled
+//     transkripcí v cizích jazycích.
+//   - requestFinalOutcome() — "posmrtné vyhodnocení" po zavěšení
+//     zákazníka, viz geminiCallHandler.ts.
 // ============================================
 
 import WebSocket from 'ws';
 import { twilioToGemini } from './audioConverter';
 import { evaV5GeminiPrompt } from '../prompts/eva_v5_gemini';
-import { evaV1GeminiPrompt } from '../prompts/eva_v1_gemini'; // ← NOVÉ
 
 const GEMINI_MODEL = 'gemini-3.1-flash-live-preview';
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`;
 const SETUP_TIMEOUT_MS = 15000; // pokud do 15s nepřijde setupComplete ani chyba, session se považuje za nezdařenou
 const KICKSTART_DELAY_MS = 1000; // prodleva před kick-startem — dá zákazníkovi prostor doříct "haló" bez překryvu s Evou
 
+// ⚠️ NOVÉ (17.8.2026) — max doba, po kterou se potlačuje vstupní audio
+// od zákazníka po odeslání kick-startu, než reálně dorazí první audio
+// chunk od Evy. Pojistka pro případ, že by Eva z nějakého důvodu
+// nezačala mluvit vůbec (jinak by se vstup potlačoval navždy) — po
+// uplynutí se shield zruší i bez audia.
+const INPUT_SUPPRESSION_MAX_MS = 4000;
+
 // ── Per-agent výběr Gemini promptu, analogie k AGENT_PROMPTS v
 // openAIService.ts. Zatím jen v5; fallback na v5 i pro neznámé/
 // nezadané agentUserId (viz getPromptForAgent níže).
 const GEMINI_AGENT_PROMPTS: Record<string, () => string> = {
-    '53c65ca7-68bc-4948-83e5-35a64c17f0fb': evaV1GeminiPrompt, // ← NOVÉ, stejné UUID jako v1 v openAIService.ts
-    'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9': evaV5GeminiPrompt,
+    'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9': evaV5GeminiPrompt, // stejné UUID jako v5 v openAIService.ts
 };
 
 export interface GeminiOutcome {
@@ -60,6 +110,12 @@ export class GeminiService {
     private kickstartTimeoutHandle: NodeJS.Timeout | null = null;
     private timingFirstBufferLogged = false;
     private timingFirstSendLogged = false;
+
+    // ⚠️ NOVÉ (17.8.2026) — input suppression shield stav. Viz hlavička
+    // souboru. true = zahazuj příchozí audio od zákazníka (dokud
+    // nedorazí první audio od Evy nebo nevyprší pojistka).
+    private suppressInputUntilFirstAudio = false;
+    private inputSuppressionTimeoutHandle: NodeJS.Timeout | null = null;
 
     // Krátký identifikátor hovoru pro transkripční logy — nastavuje ho
     // geminiCallHandler po vytvoření instance (posledních 6 znaků callSid).
@@ -88,6 +144,37 @@ export class GeminiService {
             return evaV5GeminiPrompt();
         }
         return promptFn();
+    }
+
+    // ⚠️ NOVÉ (17.8.2026) — zapne input suppression shield. Volá se
+    // těsně po odeslání kick-start clientContent zprávy (viz
+    // setupComplete handler níže). Pojistka INPUT_SUPPRESSION_MAX_MS
+    // zajistí, že se shield vždy sám zruší, i kdyby Eva z nějakého
+    // důvodu nikdy nezačala mluvit.
+    private startInputSuppression(): void {
+        this.suppressInputUntilFirstAudio = true;
+        if (this.inputSuppressionTimeoutHandle) {
+            clearTimeout(this.inputSuppressionTimeoutHandle);
+        }
+        this.inputSuppressionTimeoutHandle = setTimeout(() => {
+            if (this.suppressInputUntilFirstAudio) {
+                console.log(`⏱️ [Gemini${this.callTag ? ' ' + this.callTag : ''}] Input suppression shield: pojistka vypršela (${INPUT_SUPPRESSION_MAX_MS}ms) bez audia od Evy — obnovuji vstup`);
+            }
+            this.suppressInputUntilFirstAudio = false;
+            this.inputSuppressionTimeoutHandle = null;
+        }, INPUT_SUPPRESSION_MAX_MS);
+        console.log(`🛡️ [Gemini${this.callTag ? ' ' + this.callTag : ''}] Input suppression shield aktivní (max ${INPUT_SUPPRESSION_MAX_MS}ms nebo do prvního audia)`);
+    }
+
+    // Zruší shield — volá se při příchodu prvního audio chunku od Evy.
+    private clearInputSuppression(): void {
+        if (!this.suppressInputUntilFirstAudio && !this.inputSuppressionTimeoutHandle) return;
+        this.suppressInputUntilFirstAudio = false;
+        if (this.inputSuppressionTimeoutHandle) {
+            clearTimeout(this.inputSuppressionTimeoutHandle);
+            this.inputSuppressionTimeoutHandle = null;
+        }
+        console.log(`🛡️ [Gemini${this.callTag ? ' ' + this.callTag : ''}] Input suppression shield zrušen — první audio od Evy dorazilo`);
     }
 
     async createSession(
@@ -129,7 +216,10 @@ export class GeminiService {
                             speech_config: {
                                 voice_config: {
                                     prebuilt_voice_config: {
-                                        voice_name: 'Zephyr', // Ženský hlas, nejblíže k Evě
+                                        // ⚠️ ZMĚNA (17.8.2026): Zephyr ("Bright" — jasný,
+                                        // energický) → Achernar ("Soft" — měkčí, méně
+                                        // naléhavý tón). Obě ženské hlasy.
+                                        voice_name: 'Achernar',
                                     },
                                 },
                                 language_code: 'cs-CZ',
@@ -142,7 +232,10 @@ export class GeminiService {
                             automatic_activity_detection: {
                                 start_of_speech_sensitivity: 'START_SENSITIVITY_HIGH',
                                 end_of_speech_sensitivity: 'END_SENSITIVITY_HIGH',
-                                prefix_padding_ms: 300,
+                                // ⚠️ ZMĚNA (17.8.2026): 300 → 700ms. Filtruje krátké
+                                // šumy/artefakty na telefonní lince, které by jinak
+                                // spouštěly falešnou "start of speech" detekci.
+                                prefix_padding_ms: 700,
                                 silence_duration_ms: 600,
                             },
                         },
@@ -215,6 +308,15 @@ export class GeminiService {
                                 },
                             }));
                             console.log(`⏱️ [TIMING] ${Date.now()} | kick-start clientContent sent (po ${KICKSTART_DELAY_MS}ms prodlevě)`);
+
+                            // ⚠️ NOVÉ (17.8.2026) — okamžitě po odeslání
+                            // kick-startu zapni input suppression shield.
+                            // Chrání přesně tu zranitelnou mezeru mezi
+                            // "Eva začíná generovat pozdrav" a "Eva reálně
+                            // vydává první audio", kde by zákazníkovo
+                            // "Haló?" jinak spustilo falešné přerušení a
+                            // restart pozdravu.
+                            this.startInputSuppression();
                         }, KICKSTART_DELAY_MS);
 
                         this.onReady?.();
@@ -274,6 +376,11 @@ export class GeminiService {
                     if (msg.serverContent?.modelTurn?.parts) {
                         for (const part of msg.serverContent.modelTurn.parts) {
                             if (part.inlineData?.mimeType?.includes('audio') && part.inlineData.data) {
+                                // ⚠️ NOVÉ (17.8.2026) — první audio chunk od Evy
+                                // ruší input suppression shield (viz výše).
+                                if (this.suppressInputUntilFirstAudio) {
+                                    this.clearInputSuppression();
+                                }
                                 const pcm24k = Buffer.from(part.inlineData.data, 'base64');
                                 this.onAudioOutput?.(pcm24k);
                             }
@@ -375,6 +482,15 @@ export class GeminiService {
      * Přijme µ-law buffer z Twilia, převede na PCM16 16kHz a pošle Gemini
      */
     sendAudio(mulawBuffer: Buffer): void {
+        // ⚠️ NOVÉ (17.8.2026) — input suppression shield: dokud Eva
+        // nezačala reálně mluvit po kick-startu, příchozí audio od
+        // zákazníka se ZAHAZUJE (ne queue, ne posílá) — viz hlavička
+        // souboru pro vysvětlení proč. Kontrola musí být úplně první,
+        // před isReady/audioQueue logikou níže.
+        if (this.suppressInputUntilFirstAudio) {
+            return;
+        }
+
         if (!this.isReady || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
             if (!this.timingFirstBufferLogged) {
                 this.timingFirstBufferLogged = true;
@@ -389,6 +505,7 @@ export class GeminiService {
             console.log(`⏱️ [TIMING] ${Date.now()} | first audio chunk SENT to Gemini`);
         }
 
+        // Konverze: µ-law 8kHz → PCM16 16kHz
         const pcm16k = twilioToGemini(mulawBuffer);
 
         const audioMessage = {
@@ -412,6 +529,11 @@ export class GeminiService {
             clearTimeout(this.kickstartTimeoutHandle);
             this.kickstartTimeoutHandle = null;
         }
+        if (this.inputSuppressionTimeoutHandle) {
+            clearTimeout(this.inputSuppressionTimeoutHandle);
+            this.inputSuppressionTimeoutHandle = null;
+        }
+        this.suppressInputUntilFirstAudio = false;
         if (this.ws) {
             console.log('🔌 [Gemini] Closing session...');
             this.isReady = false;
