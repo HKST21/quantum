@@ -72,7 +72,7 @@ export interface BatchStatus {
     isRunning: boolean;
     currentCall: { phone: string; companyName: string } | null;
     today: {
-        completed: number; interested: number; noAnswer: number;
+        completed: number; interested: number; noAnswer: number; hungUp: number;
         rejected: number; callback: number; avgDuration: number; conversionRate: number;
     };
     queueSize: number;
@@ -86,6 +86,7 @@ export interface BatchHistoryItem {
     completed: number;
     interested: number;
     noAnswer: number;
+    hungUp: number;
     rejected: number;
     callback: number;
     avgDuration: number;
@@ -110,16 +111,12 @@ export interface Agent {
     id: string; fullName: string; email: string;
 }
 
-// Odorik konfigurace - aktivně nakonfigurovaná SIP jména z ENV (jen schválená)
 export interface OdorikConfig {
     sipNames: string[];
     maxWorkers: number;
     odorikPhoneNumber: string | null;
 }
 
-// ⚠️ NOVÉ — dvě nezávislé osy, sjednocené do jednoho backend endpointu
-// /ai-calls/start. provider řeší přes co se volá (pevná linka vs.
-// mobilní Odorik), engine řeší kterým AI modelem se hovor vede.
 export type CallProvider = 'twilio' | 'odorik';
 export type CallEngine = 'openai' | 'gemini';
 
@@ -156,14 +153,6 @@ export const retryUnanswered = (agentUserId?: string): Promise<{ updated: number
 export const getAvgDuration = (): Promise<AvgDuration> =>
     fetchJson('/ai-calls/avg-duration');
 
-// ⚠️ SJEDNOCENO — dřív dvě funkce (startAICalling pro Twilio,
-// startOdorikCalling pro Odorik), volající dva různé backend endpointy.
-// Backend teď má jeden /ai-calls/start endpoint s provider + engine
-// parametry, oba s bezpečným defaultem ('twilio'/'openai'). Stará
-// funkce startOdorikCalling byla ODSTRANĚNA — endpoint
-// /ai-calls/start-odorik-calling na backendu už neexistuje, takže
-// pokud na ni v kódu ještě něco odkazuje, nahraď to startAICalling
-// s provider='odorik'.
 export const startAICalling = (
     maxCalls: number,
     agentUserId: string,

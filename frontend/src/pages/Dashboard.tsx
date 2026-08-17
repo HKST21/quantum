@@ -10,12 +10,14 @@ const AGENTS = [
     { id: 'e7a469bb-4783-4f96-b961-03dd503e5bfa', name: 'Eva V3', description: 'Nepřeplácíte za služby?' },
     { id: 'f4adb349-70c3-4e63-8670-81f6c177f61d', name: 'Eva V4', description: 'Nezávazné porovnání' },
     { id: 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9', name: 'Eva V5', description: 'Dvoustupňová kvalifikace' },
+    { id: 'dab796fa-bf16-4f99-812c-601a031049ce', name: 'Eva Gemini V2', description: 'Zjednodušený VIP ceník (Gemini)' },
 ];
 
 const STATUS_LABELS: Record<string, { label: string; badge: string }> = {
     NOVY: { label: 'Nový', badge: 'badge-primary' },
     CHCE_KONTAKT_AI: { label: 'Chce kontakt', badge: 'badge-success' },
     NEZVEDL_TELEFON: { label: 'Nezvedl', badge: 'badge-warning' },
+    POLOZIL_TELEFON: { label: 'Položil telefon', badge: 'badge-warning' },
     ODMITNUTO: { label: 'Odmítnuto', badge: 'badge-danger' },
     NEKONTAKTOVAT: { label: 'Nekontaktovat', badge: 'badge-danger' },
     ODKLADA: { label: 'Odkládá', badge: 'badge-warning' },

@@ -7,6 +7,22 @@ const DEFAULT_AI_AGENT_ID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
 const getAgentId = (req: Request): string =>
     (req.query.agentUserId as string) || DEFAULT_AI_AGENT_ID;
 
+// ⚠️ NOVÉ (18.8.2026) — explicitní seznam UUID AI agentů, místo
+// křehkého filtru podle emailové domény (u.email LIKE 'ai-agent%'),
+// který novým agentům jako Eva Gemini V2 (email
+// eva-gemini-v2@quantum.internal) vůbec nesedí — jejich dávky by se
+// tak z Historie dávek úplně ztratily, i když se v ai_call_logs
+// normálně zapsaly. Až přibude další agent (další Gemini prompt nebo
+// nová OpenAI verze), přidej jeho UUID sem.
+const AI_AGENT_IDS = [
+    '53c65ca7-68bc-4948-83e5-35a64c17f0fb', // Eva V1 (OpenAI)
+    'aeec78ff-a86b-4cab-b33a-adeb7c94f08e', // Eva V2 (OpenAI)
+    'e7a469bb-4783-4f96-b961-03dd503e5bfa', // Eva V3 (OpenAI)
+    'f4adb349-70c3-4e63-8670-81f6c177f61d', // Eva V4 (OpenAI)
+    'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9', // Eva V5 (OpenAI + Gemini)
+    'dab796fa-bf16-4f99-812c-601a031049ce', // Eva Gemini V2
+];
+
 // ============================================
 // POST /api/ai-calls/verify-password
 // ============================================
@@ -14,7 +30,7 @@ export const verifyPassword = async (req: Request, res: Response, next: NextFunc
     try {
         const { password } = req.body;
         if (!password) {
-            res.status(400).json({ error: { message: 'Heslo je povinné', statusCode: 400 } });
+            res.status(400).json({ error: { message: 'Heslo je povinné' } });
             return;
         }
         const result = await pool.query(
@@ -22,12 +38,12 @@ export const verifyPassword = async (req: Request, res: Response, next: NextFunc
             [req.user!.id]
         );
         if (result.rows.length === 0) {
-            res.status(401).json({ error: { message: 'Uživatel nenalezen', statusCode: 401 } });
+            res.status(401).json({ error: { message: 'Uživatel nenalezen' } });
             return;
         }
         const isValid = await bcrypt.compare(password, result.rows[0].password_hash);
         if (!isValid) {
-            res.status(401).json({ error: { message: 'Nesprávné heslo', statusCode: 401 } });
+            res.status(401).json({ error: { message: 'Nesprávné heslo' } });
             return;
         }
         res.status(200).json({ success: true });
@@ -38,6 +54,10 @@ export const verifyPassword = async (req: Request, res: Response, next: NextFunc
 
 // ============================================
 // GET /api/ai-calls/batch-status?agentUserId=
+//
+// ⚠️ NOVÉ (18.8.2026) — přidán hung_up (POLOZIL_TELEFON) do statistik,
+// ať se nový outcome nezapočítává jen do "completed" bez viditelné
+// kategorie.
 // ============================================
 export const getBatchStatus = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -57,6 +77,7 @@ export const getBatchStatus = async (req: Request, res: Response, next: NextFunc
                 COUNT(*) FILTER (WHERE acl.status = 'completed') AS completed,
                 COUNT(*) FILTER (WHERE acl.outcome = 'CHCE_KONTAKT_AI') AS interested,
                 COUNT(*) FILTER (WHERE acl.outcome = 'NEZVEDL_TELEFON') AS no_answer,
+                COUNT(*) FILTER (WHERE acl.outcome = 'POLOZIL_TELEFON') AS hung_up,
                 COUNT(*) FILTER (WHERE acl.outcome = 'NEKONTAKTOVAT') AS rejected,
                 COUNT(*) FILTER (WHERE acl.outcome = 'ODKLADA') AS callback,
                 ROUND(AVG(acl.duration) FILTER (WHERE acl.duration IS NOT NULL AND acl.duration > 0)) AS avg_duration
@@ -90,6 +111,7 @@ export const getBatchStatus = async (req: Request, res: Response, next: NextFunc
                 completed: parseInt(stats.completed || 0),
                 interested: parseInt(stats.interested || 0),
                 noAnswer: parseInt(stats.no_answer || 0),
+                hungUp: parseInt(stats.hung_up || 0),
                 rejected: parseInt(stats.rejected || 0),
                 callback: parseInt(stats.callback || 0),
                 avgDuration: parseInt(stats.avg_duration || 0),
@@ -139,6 +161,10 @@ export const getBatchResults = async (req: Request, res: Response, next: NextFun
 
 // ============================================
 // GET /api/ai-calls/batch-history — všichni agenti, per datum + agent
+//
+// ⚠️ ZMĚNA (18.8.2026): u.email LIKE 'ai-agent%' → l.assigned_to =
+// ANY($1) s explicitním seznamem AI_AGENT_IDS. Přidán hung_up
+// (POLOZIL_TELEFON) do statistik.
 // ============================================
 export const getBatchHistory = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -151,6 +177,7 @@ export const getBatchHistory = async (_req: Request, res: Response, next: NextFu
                 COUNT(*) FILTER (WHERE acl.status = 'completed')                AS completed,
                 COUNT(*) FILTER (WHERE acl.outcome = 'CHCE_KONTAKT_AI')         AS interested,
                 COUNT(*) FILTER (WHERE acl.outcome = 'NEZVEDL_TELEFON')         AS no_answer,
+                COUNT(*) FILTER (WHERE acl.outcome = 'POLOZIL_TELEFON')         AS hung_up,
                 COUNT(*) FILTER (WHERE acl.outcome = 'NEKONTAKTOVAT')           AS rejected,
                 COUNT(*) FILTER (WHERE acl.outcome = 'ODKLADA')                 AS callback,
                 ROUND(AVG(acl.duration) FILTER (WHERE acl.duration IS NOT NULL AND acl.duration > 0)) AS avg_duration,
@@ -162,9 +189,10 @@ export const getBatchHistory = async (_req: Request, res: Response, next: NextFu
              JOIN leads l ON acl.lead_id = l.id
              JOIN users u ON l.assigned_to = u.id
              WHERE acl.created_at >= NOW() - INTERVAL '30 days'
-             AND u.email LIKE 'ai-agent%'
+             AND l.assigned_to = ANY($1)
              GROUP BY DATE(acl.created_at AT TIME ZONE 'Europe/Prague'), l.assigned_to, u.full_name
-             ORDER BY datum DESC, celkem_hovoru DESC`
+             ORDER BY datum DESC, celkem_hovoru DESC`,
+            [AI_AGENT_IDS]
         );
 
         res.status(200).json({
@@ -176,6 +204,7 @@ export const getBatchHistory = async (_req: Request, res: Response, next: NextFu
                 completed: parseInt(row.completed),
                 interested: parseInt(row.interested),
                 noAnswer: parseInt(row.no_answer),
+                hungUp: parseInt(row.hung_up),
                 rejected: parseInt(row.rejected),
                 callback: parseInt(row.callback),
                 avgDuration: parseInt(row.avg_duration || 0),
@@ -247,6 +276,11 @@ export const getUnanswered = async (req: Request, res: Response, next: NextFunct
 
 // ============================================
 // POST /api/ai-calls/retry-unanswered
+//
+// Beze změny — POLOZIL_TELEFON se sem záměrně NEDOPLŇUJE. Na rozdíl
+// od NEZVEDL_TELEFON (kde vůbec nevíme, jestli zákazník telefon
+// zvedl), u POLOZIL_TELEFON víme jistě, že zvedl a hovor se s ním
+// neuzavřel — retry nedává obchodní smysl.
 // ============================================
 export const retryUnanswered = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -291,23 +325,28 @@ export const retryUnanswered = async (req: Request, res: Response, next: NextFun
 
 // ============================================
 // GET /api/ai-calls/avg-duration
+//
+// ⚠️ POZNÁMKA (18.8.2026) — dnes stále míchá OpenAI a Gemini hovory
+// dohromady (bod 7, řešíme později).
 // ============================================
 export const getAvgDuration = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         const result = await pool.query(
-            `SELECT ROUND(AVG(duration)) AS avg_duration, COUNT(*) AS sample_size
-             FROM (
-                 SELECT duration FROM ai_call_logs
-                 WHERE duration IS NOT NULL AND duration > 0 AND status = 'completed'
-                 ORDER BY created_at DESC LIMIT 100
-             ) recent`
+            `SELECT ROUND(AVG(duration))::int AS avg_duration, COUNT(*) AS sample_size
+             FROM ai_call_logs
+             WHERE status = 'completed' AND duration > 0 AND duration < 300
+               AND created_at >= NOW() - INTERVAL '7 days'`
         );
 
-        const avgDuration = parseInt(result.rows[0].avg_duration || 30);
-        const sampleSize = parseInt(result.rows[0].sample_size || 0);
+        const avgDuration = parseInt(result.rows[0].avg_duration) || 25;
         const overhead = 8;
 
-        res.status(200).json({ avgDuration, overhead, totalPerCall: avgDuration + overhead, sampleSize });
+        res.status(200).json({
+            avgDuration,
+            overhead,
+            totalPerCall: avgDuration + overhead,
+            sampleSize: parseInt(result.rows[0].sample_size) || 0,
+        });
     } catch (error) {
         next(error);
     }
@@ -509,8 +548,6 @@ export const blacklistLead = async (req: Request, res: Response, next: NextFunct
 
 // ============================================
 // POST /api/ai-calls/delete-leads
-// Hromadné mazání NOVY leadů per agent
-// Leady se natvrdo smažou z DB včetně deduplication záznamu
 // ============================================
 export const deleteLeads = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -526,7 +563,6 @@ export const deleteLeads = async (req: Request, res: Response, next: NextFunctio
             return;
         }
 
-        // Ověř agenta
         const agentCheck = await pool.query(
             `SELECT id, full_name FROM users WHERE id = $1 AND is_active = true`,
             [agentId]
@@ -537,7 +573,6 @@ export const deleteLeads = async (req: Request, res: Response, next: NextFunctio
             return;
         }
 
-        // Nejdřív zjisti kolik jich bude smazáno
         const countResult = await pool.query(
             `SELECT COUNT(*) AS total FROM leads
              WHERE status = 'NOVY'
@@ -554,7 +589,6 @@ export const deleteLeads = async (req: Request, res: Response, next: NextFunctio
             return;
         }
 
-        // Smaž natvrdo — CASCADE zajistí smazání ai_call_logs, lead_comments atd.
         const result = await pool.query(
             `DELETE FROM leads
              WHERE id IN (

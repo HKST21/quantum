@@ -11,24 +11,26 @@ interface AgentOption {
     name: string;
     description: string;
     pitch: string;
+    // ⚠️ NOVÉ — volitelný přepis pitche pro Gemini, když se text liší
+    // od OpenAI verze (typicky kvůli povinnému "jako AI" — regulatorní
+    // požadavek, který má jen Gemini prompt). Pokud chybí, použije se
+    // `pitch` pro oba enginy (tak je tomu u V5 a u Eva Gemini V2, kde
+    // texty sedí 1:1 / je jen jeden engine).
+    pitchGemini?: string;
     secondQuestion?: string;
     successLine: string;
-    // ⚠️ NOVÉ — pro které enginy má tenhle agent hotový prompt.
-    // V2–V4 mají zatím jen OpenAI verzi (eva_v2–v4), Gemini ekvivalenty
-    // ještě nebyly napsané. V1 a V5 mají obě varianty (eva_v1_gemini,
-    // eva_v5_gemini). Až přibudou další Gemini prompty, stačí sem
-    // doplnit 'gemini' do pole engines u příslušného agenta.
     engines: CallEngine[];
 }
 
 const AGENTS: AgentOption[] = [
-
-
     {
         id: '53c65ca7-68bc-4948-83e5-35a64c17f0fb',
         name: 'Eva V1',
         description: 'VIP ceník do SMS',
         pitch: 'Volám z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?',
+        // ⚠️ Gemini verze má povinné "jako AI" (regulatorní požadavek) —
+        // eva_v1_gemini.ts to má správně, tohle jen sjednocuje náhled v UI.
+        pitchGemini: 'Krásný den, slyšíme se? Volám jako AI z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?',
         successLine: 'Skvěle! Kolega se ozve v krátkém hovoru a připraví Vám ho na míru. Hezký den!',
         engines: ['openai', 'gemini'],
     },
@@ -75,6 +77,10 @@ const AGENTS: AgentOption[] = [
     },
 ];
 
+// ⚠️ NOVÉ — preferovaný Gemini agent, na kterého se přepne automaticky
+// při kliknutí na "Gemini" engine přepínač (viz handleEngineChange).
+const GEMINI_DEFAULT_AGENT_ID = 'dab796fa-bf16-4f99-812c-601a031049ce'; // Eva Gemini V2
+
 // Twilio worker konfigurace (statická, odpovídá AI_PHONE_1..5 v ENV backendu)
 const TWILIO_MAX_WORKERS = 5;
 const TWILIO_WORKER_PHONES = [
@@ -111,20 +117,34 @@ const Calling: React.FC = () => {
 
     const pollRef = useRef<NodeJS.Timeout | null>(null);
 
-    // ⚠️ NOVÉ — agenti dostupní pro aktuálně vybraný engine. Gemini má
-    // zatím prompt jen pro V1 a V5 (viz AGENTS.engines výše).
     const availableAgents = AGENTS.filter(a => a.engines.includes(engine));
 
-    // Když engine přepneš na Gemini a aktuálně vybraný agent Gemini
-    // prompt nemá (V2–V4), automaticky přeskoč na první dostupný —
-    // ať nikdy nejde spustit dávka s agentem, který pro daný engine
-    // nemá připravený prompt (backend by jinak tiše spadl na V5 fallback).
-    useEffect(() => {
-        if (!availableAgents.find(a => a.id === selectedAgent.id)) {
-            setSelectedAgent(availableAgents[0]);
+    // ⚠️ ZMĚNA (18.8.2026) — přepínání enginu teď řídí explicitní
+    // handler místo useEffect. Důvod: Eva V1 je kompatibilní s OBĚMA
+    // enginy, takže starý useEffect (který přepínal agenta jen když
+    // aktuální nebyl v availableAgents) by při přechodu Eva V1 →
+    // engine=gemini agenta vůbec nezměnil, protože V1 by pořád "sedělo".
+    // Chceme ale, aby se při kliknutí na Gemini vždy prioritně nabídla
+    // Eva Gemini V2, ne cokoliv, co bylo vybrané předtím.
+    const handleEngineChange = (newEngine: CallEngine) => {
+        setEngine(newEngine);
+
+        if (newEngine === 'gemini') {
+            const preferred = AGENTS.find(a => a.id === GEMINI_DEFAULT_AGENT_ID);
+            if (preferred) {
+                setSelectedAgent(preferred);
+                return;
+            }
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [engine]);
+
+        // OpenAI (nebo Gemini bez nalezeného preferovaného agenta) —
+        // zachovej aktuálního agenta, pokud je s novým enginem
+        // kompatibilní, jinak padni na první dostupný.
+        const stillCompatible = AGENTS.filter(a => a.engines.includes(newEngine));
+        if (!stillCompatible.find(a => a.id === selectedAgent.id)) {
+            setSelectedAgent(stillCompatible[0]);
+        }
+    };
 
     // Odorik config se načítá jednou při mountu - nezávisí na vybraném agentovi.
     useEffect(() => {
@@ -235,6 +255,12 @@ const Calling: React.FC = () => {
         setSelectedAgent(availableAgents.find(a => a.id === agentId) || availableAgents[0]);
     };
 
+    // ⚠️ NOVÉ — vybere pitch text podle aktuálního enginu (viz
+    // AgentOption.pitchGemini komentář výše).
+    const displayedPitch = engine === 'gemini' && selectedAgent.pitchGemini
+        ? selectedAgent.pitchGemini
+        : selectedAgent.pitch;
+
     const handleReauth = async (e: React.FormEvent) => {
         e.preventDefault();
         setReauthError('');
@@ -254,7 +280,6 @@ const Calling: React.FC = () => {
                 return;
             }
 
-            // ⚠️ SJEDNOCENO — jeden endpoint pro Twilio/Odorik i OpenAI/Gemini
             await startAICalling(maxCalls, selectedAgent.id, workers, provider, engine);
 
             const status = await getBatchStatus(selectedAgent.id);
@@ -304,7 +329,6 @@ const Calling: React.FC = () => {
                         </div>
                         <div className="card-body">
 
-                            {/* ⚠️ NOVÉ — Engine select (OpenAI / Gemini) */}
                             <div className="form-group">
                                 <label className="form-label">AI Engine</label>
                                 <div style={{ display: 'flex', gap: 8 }}>
@@ -313,7 +337,7 @@ const Calling: React.FC = () => {
                                             key={eng}
                                             type="button"
                                             className={`btn ${engine === eng ? 'btn-primary' : 'btn-outline'}`}
-                                            onClick={() => setEngine(eng)}
+                                            onClick={() => handleEngineChange(eng)}
                                         >
                                             {ENGINE_LABELS[eng].icon} {ENGINE_LABELS[eng].label}
                                         </button>
@@ -321,7 +345,7 @@ const Calling: React.FC = () => {
                                 </div>
                                 {engine === 'gemini' && (
                                     <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
-                                        ℹ️ Gemini je zatím dostupné jen pro Eva V1 a Eva V5.
+                                        ℹ️ Gemini je dostupné pro Eva V1, Eva Gemini V2 a Eva V5.
                                     </div>
                                 )}
                             </div>
@@ -343,7 +367,7 @@ const Calling: React.FC = () => {
                                     🎙 Pitch věta
                                 </div>
                                 <div style={{ fontSize: 13, color: 'var(--gray-800)', lineHeight: 1.6, fontStyle: 'italic' }}>
-                                    „{selectedAgent.pitch}"
+                                    „{displayedPitch}"
                                 </div>
                                 {selectedAgent.secondQuestion && (
                                     <>
@@ -521,7 +545,7 @@ const Calling: React.FC = () => {
             {step === 'calling' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div style={{ background: 'var(--primary-light)', border: '1px solid #bfdbfe', borderRadius: 'var(--radius)', padding: '8px 14px', fontSize: 13, color: 'var(--primary)', fontWeight: 600, marginBottom: 12 }}>
-                        🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {provider === 'twilio' ? '☎️ Twilio' : '📱 Odorik'} · {workers} worker{workers > 1 ? 'y' : ''} · „{selectedAgent.pitch.slice(0, 55)}..."
+                        🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {provider === 'twilio' ? '☎️ Twilio' : '📱 Odorik'} · {workers} worker{workers > 1 ? 'y' : ''} · „{displayedPitch.slice(0, 55)}..."
                     </div>
                     <div className="live-feed mb-16">
                         <span className="live-dot" />
@@ -548,6 +572,7 @@ const Calling: React.FC = () => {
                         <div className="stat-card"><div className="stat-label">Celkem hovorů</div><div className="stat-value primary">{batchStatus.today.completed}</div></div>
                         <div className="stat-card"><div className="stat-label">Zájem ✅</div><div className="stat-value success">{batchStatus.today.interested}</div></div>
                         <div className="stat-card"><div className="stat-label">Nezvedl</div><div className="stat-value warning">{batchStatus.today.noAnswer}</div></div>
+                        <div className="stat-card"><div className="stat-label">Položil</div><div className="stat-value warning">{batchStatus.today.hungUp}</div></div>
                         <div className="stat-card"><div className="stat-label">Odmítnuto</div><div className="stat-value danger">{batchStatus.today.rejected}</div></div>
                         <div className="stat-card"><div className="stat-label">Konverze</div><div className="stat-value primary">{batchStatus.today.conversionRate}%</div></div>
                         <div className="stat-card"><div className="stat-label">Prům. délka</div><div className="stat-value">{batchStatus.today.avgDuration > 0 ? formatDuration(batchStatus.today.avgDuration) : '—'}</div></div>
@@ -566,6 +591,7 @@ const Calling: React.FC = () => {
                         <div className="stat-card"><div className="stat-label">Celkem hovorů</div><div className="stat-value primary">{batchStatus.today.completed}</div></div>
                         <div className="stat-card"><div className="stat-label">Zájem ✅</div><div className="stat-value success">{batchStatus.today.interested}</div><div className="stat-sub">CHCE_KONTAKT_AI</div></div>
                         <div className="stat-card"><div className="stat-label">Nezvedl</div><div className="stat-value warning">{batchStatus.today.noAnswer}</div></div>
+                        <div className="stat-card"><div className="stat-label">Položil</div><div className="stat-value warning">{batchStatus.today.hungUp}</div></div>
                         <div className="stat-card"><div className="stat-label">Odmítnuto</div><div className="stat-value danger">{batchStatus.today.rejected}</div></div>
                         <div className="stat-card"><div className="stat-label">Odkládá</div><div className="stat-value warning">{batchStatus.today.callback}</div></div>
                         <div className="stat-card"><div className="stat-label">Konverze</div><div className="stat-value primary">{batchStatus.today.conversionRate}%</div><div className="stat-sub">zájem / dokončeno</div></div>

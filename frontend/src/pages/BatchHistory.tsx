@@ -8,6 +8,7 @@ const AGENT_COLORS: Record<string, string> = {
     'e7a469bb-4783-4f96-b961-03dd503e5bfa': '#059669', // Eva V3 - zelená
     'f4adb349-70c3-4e63-8670-81f6c177f61d': '#d97706', // Eva V4 - oranžová
     'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9': '#db2777', // Eva V5 - růžová
+    'dab796fa-bf16-4f99-812c-601a031049ce': '#0891b2', // Eva Gemini V2 - tyrkysová
 };
 
 const BatchHistory: React.FC = () => {
@@ -64,10 +65,11 @@ const BatchHistory: React.FC = () => {
             celkemHovoru: acc.celkemHovoru + b.celkemHovoru,
             interested: acc.interested + b.interested,
             noAnswer: acc.noAnswer + b.noAnswer,
+            hungUp: acc.hungUp + (b.hungUp || 0),
             rejected: acc.rejected + b.rejected,
             callback: acc.callback + b.callback,
         }),
-        { celkemHovoru: 0, interested: 0, noAnswer: 0, rejected: 0, callback: 0 }
+        { celkemHovoru: 0, interested: 0, noAnswer: 0, hungUp: 0, rejected: 0, callback: 0 }
     );
 
     const totalConversion = totals.celkemHovoru > 0
@@ -115,6 +117,11 @@ const BatchHistory: React.FC = () => {
                         <div className="stat-value warning">{totals.noAnswer.toLocaleString('cs-CZ')}</div>
                     </div>
                     <div className="stat-card">
+                        <div className="stat-label">Položil telefon</div>
+                        <div className="stat-value warning">{totals.hungUp.toLocaleString('cs-CZ')}</div>
+                        <div className="stat-sub">zvedl, bez jasného výsledku</div>
+                    </div>
+                    <div className="stat-card">
                         <div className="stat-label">Odmítnuto</div>
                         <div className="stat-value danger">{totals.rejected.toLocaleString('cs-CZ')}</div>
                     </div>
@@ -158,6 +165,7 @@ const BatchHistory: React.FC = () => {
                             <th>Celkem hovorů</th>
                             <th>Zájem ✅</th>
                             <th>Nezvedl</th>
+                            <th>Položil</th>
                             <th>Odmítnuto</th>
                             <th>Odkládá</th>
                             <th>Konverze</th>
@@ -186,12 +194,13 @@ const BatchHistory: React.FC = () => {
                                             color: AGENT_COLORS[(batch as any).agentId] || '#6b7280',
                                             border: `1px solid ${AGENT_COLORS[(batch as any).agentId] || '#6b7280'}40`,
                                         }}>
-                                            {(batch as any).agentId === 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9' ? '🧪' : '🤖'} {(batch as any).agentName || 'Neznámý agent'}
+                                            🤖 {(batch as any).agentName || 'Neznámý agent'}
                                         </span>
                                 </td>
                                 <td style={{ fontWeight: 600 }}>{batch.celkemHovoru.toLocaleString('cs-CZ')}</td>
                                 <td><span className="badge badge-success">{batch.interested}</span></td>
                                 <td><span className="badge badge-warning">{batch.noAnswer}</span></td>
+                                <td><span className="badge badge-warning">{batch.hungUp || 0}</span></td>
                                 <td><span className="badge badge-danger">{batch.rejected}</span></td>
                                 <td><span className="badge badge-gray">{batch.callback}</span></td>
                                 <td>
