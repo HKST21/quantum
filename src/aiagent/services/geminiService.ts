@@ -24,6 +24,7 @@
 import WebSocket from 'ws';
 import { twilioToGemini } from './audioConverter';
 import { evaV5GeminiPrompt } from '../prompts/eva_v5_gemini';
+import { evaV1GeminiPrompt } from '../prompts/eva_v1_gemini'; // ← NOVÉ
 
 const GEMINI_MODEL = 'gemini-3.1-flash-live-preview';
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`;
@@ -34,7 +35,8 @@ const KICKSTART_DELAY_MS = 1000; // prodleva před kick-startem — dá zákazn�
 // openAIService.ts. Zatím jen v5; fallback na v5 i pro neznámé/
 // nezadané agentUserId (viz getPromptForAgent níže).
 const GEMINI_AGENT_PROMPTS: Record<string, () => string> = {
-    'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9': evaV5GeminiPrompt, // stejné UUID jako v5 v openAIService.ts
+    '53c65ca7-68bc-4948-83e5-35a64c17f0fb': evaV1GeminiPrompt, // ← NOVÉ, stejné UUID jako v1 v openAIService.ts
+    'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9': evaV5GeminiPrompt,
 };
 
 export interface GeminiOutcome {
