@@ -9,7 +9,7 @@ import {
     AICallStatusResponse, AICallLog, AICallLogsQuery, AICallLogsResponse,
     CallEngine, CallProvider,
 } from '../types/aiCalls.types';
-
+import { geminiCallHandler } from '../websockets/geminiCallHandler';
 const DEFAULT_AI_AGENT_ID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
 
 // ============================================
@@ -295,15 +295,56 @@ export const getTwiML = async (req: Request, res: Response, next: NextFunction):
     }
 };
 
+// ============================================
+// POST /api/ai-calls/webhook/status-callback
+//
+// ⚠️ NOVÉ (17.8.2026) — na Twilio 'ringing' eventu se pro Gemini
+// hovory spustí prewarm (viz geminiCallHandler.prewarmCall). Pro
+// OpenAI hovory (engine !== 'gemini') se tahle větev vůbec nespustí —
+// nulová změna chování.
+// ============================================
 export const handleStatusCallback = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        const { CallSid, CallDuration } = req.body;
-        console.log('📞 Twilio status callback:', { CallSid });
+        const { CallSid, CallDuration, CallStatus } = req.body;
+
+        console.log('📞 Twilio status callback:', { CallSid, CallStatus });
 
         await pool.query(
             `UPDATE ai_call_logs SET duration = COALESCE(duration, $1) WHERE call_sid = $2`,
             [CallDuration || 0, CallSid]
         );
+
+        if (CallStatus === 'ringing') {
+            try {
+                const result = await pool.query(
+                    `SELECT l.id AS lead_id, l.company_name, l.contact_person, l.phone, l.assigned_to, acl.engine
+                     FROM ai_call_logs acl
+                     INNER JOIN leads l ON l.id = acl.lead_id
+                     WHERE acl.call_sid = $1`,
+                    [CallSid]
+                );
+
+                if (result.rows.length > 0 && result.rows[0].engine === 'gemini') {
+                    const row = result.rows[0];
+                    // Nečekáme na dokončení prewarmu — webhook musí
+                    // odpovědět rychle, prewarm běží na pozadí.
+                    geminiCallHandler.prewarmCall(
+                        CallSid,
+                        row.lead_id,
+                        row.assigned_to,
+                        {
+                            companyName: row.company_name,
+                            contactPerson: row.contact_person,
+                            phone: row.phone,
+                        }
+                    ).catch(err => console.error('❌ Gemini prewarm error:', err));
+                }
+            } catch (err) {
+                console.error('❌ Gemini prewarm lookup error:', err);
+                // Prewarm je jen optimalizace — chyba tady nesmí shodit
+                // status callback ani hovor samotný.
+            }
+        }
 
         res.status(200).send('OK');
     } catch (error) {
