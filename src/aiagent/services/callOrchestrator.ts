@@ -51,8 +51,8 @@ const POST_MORTEM_WAIT_INTERVAL_MS = 1500;
 
 // ⚠️ NOVÉ — Odorik prodlevy (viz hlavička souboru, bod 4)
 const ODORIK_PROPAGATION_DELAY_MS = 1500;
-const ODORIK_MIN_INTER_CALL_DELAY_MS = 5_000;
-const ODORIK_MAX_INTER_CALL_DELAY_MS = 15_000;
+const ODORIK_MIN_INTER_CALL_DELAY_MS = 10_000;
+const ODORIK_MAX_INTER_CALL_DELAY_MS = 18_000;
 
 export class CallOrchestrator {
 
