@@ -61,9 +61,9 @@ const AGENTS: AgentOption[] = [
     {
         id: 'f4adb349-70c3-4e63-8670-81f6c177f61d',
         name: 'Eva V4',
-        description: 'Neveřejné slevy — kolega z masa a kostí',
-        pitch: 'T-Mobile partner u telefonu, volám kvůli neveřejným slevám. Můžu Vám domluvit krátký hovor s kolegou z masa a kostí?',
-        successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
+        description: 'Zjednodušený VIP ceník (krátký pitch)',
+        pitch: 'Krásný den, volám jako AI z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?',
+        successLine: 'Skvěle! Kolega se ozve v krátkém hovoru a připraví Vám ho na míru. Hezký den!',
         engines: ['openai'],
     },
     {
