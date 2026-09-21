@@ -3,7 +3,7 @@ import {
     startAICalling, stopAICalling, getAICallStatus,
     getAICallLogs, getAICallLogDetail,
     getTwiML, handleStatusCallback, handleRecordingCallback,
-    startOdorikTestCall, getOdorikConfig
+    startOdorikTestCall, getOdorikConfig, testOdorikNewLine
 } from '../controllers/aiCalls.controller';
 import { authenticate } from '../../middleware/authenticate';
 import { authorize } from '../../middleware/authorize';
@@ -25,6 +25,8 @@ router.post('/webhook/status-callback', handleStatusCallback);
 router.post('/webhook/recording-callback', handleRecordingCallback);
 
 router.post('/test-odorik', authenticate, authorize(['ADMIN']), startOdorikTestCall);
+
+router.post('/test-odorik-new-line', authenticate, authorize(['ADMIN']), testOdorikNewLine);
 
 router.get('/odorik-config', authenticate, authorize(['ADMIN']), getOdorikConfig);
 

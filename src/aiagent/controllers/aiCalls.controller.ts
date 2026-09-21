@@ -452,6 +452,65 @@ export const startOdorikTestCall = async (req: Request, res: Response, next: Nex
 };
 
 // ============================================
+// POST /api/ai-calls/test-odorik-new-line
+// ⚠️ DOČASNÝ testovací endpoint — ověřuje hypotézu, že stávající
+// Twilio BYOC trunk (ODORIK_BYOC_TRUNK_SID) funguje i pro JINOU
+// Odorik linku, než pro kterou byl původně nastaven (790766).
+// Autentizace na Twilio straně je jen sip:sip.odorik.cz bez
+// credentials v URI — pokud routing/autorizace probíhá na Odorik
+// straně přes Caller ID (from number), nemusí být potřeba samostatný
+// trunk pro každou linku. Tenhle test to ověří naostro.
+//
+// Nepoužívá žádného reálného leada, netvoří žádný záznam v
+// ai_call_logs, jen zavolá Twilio přímo s demo TwiML.
+// ============================================
+export const testOdorikNewLine = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { targetPhone, publicNumber, callerNumber } = req.body as {
+            targetPhone?: string;
+            publicNumber?: string;
+            callerNumber?: string;
+        };
+
+        if (!targetPhone || !publicNumber || !callerNumber) {
+            throw new BadRequestError('targetPhone, publicNumber a callerNumber jsou povinné');
+        }
+
+        if (!process.env.ODORIK_BYOC_TRUNK_SID) {
+            throw new BadRequestError('ODORIK_BYOC_TRUNK_SID není nakonfigurováno v ENV');
+        }
+
+        console.log(`🧪 [TEST NOVÁ LINKA] ${publicNumber} (caller: ${callerNumber}) → ${targetPhone}`);
+
+        // Nastav přesměrování na novém veřejném čísle (setForward si
+        // interně nejdřív smaže staré routes, viz odorikService.ts)
+        await odorikService.setForward(publicNumber, targetPhone);
+
+        const Twilio = require('twilio');
+        const client = Twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+
+        const call = await client.calls.create({
+            to: `sip:${publicNumber}@sip.odorik.cz`,
+            from: callerNumber,
+            url: 'http://demo.twilio.com/docs/voice.xml',
+            byoc: process.env.ODORIK_BYOC_TRUNK_SID, // ← STÁVAJÍCÍ trunk, natvrdo
+        });
+
+        console.log(`✅ [TEST NOVÁ LINKA] Call created: ${call.sid}, status: ${call.status}`);
+
+        res.status(200).json({
+            success: true,
+            callSid: call.sid,
+            status: call.status,
+            to: call.to,
+            from: call.from,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
 // GET /api/ai-calls/odorik-config
 // ============================================
 export const getOdorikConfig = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
