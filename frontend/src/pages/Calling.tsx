@@ -86,10 +86,31 @@ const ENGINE_LABELS: Record<CallEngine, { label: string; icon: string }> = {
     gemini: { label: 'Gemini', icon: '✨' },
 };
 
-// ⚠️ NOVÉ — popisky Odorik linek pro UI
 const ODORIK_LINE_LABELS: Record<OdorikLine, { label: string; icon: string; lineNumber: string }> = {
     mobilni: { label: 'Mobilní (790766)', icon: '📱', lineNumber: '790766' },
     pevna: { label: 'Pevná (793305)', icon: '☎️', lineNumber: '793305' },
+};
+
+// ⚠️ NATVRDO — skutečné CLIP číslo, které zákazník vidí na displeji.
+// LIŠÍ SE od hodnoty vrácené backendem v odorikConfig.lines[X].phoneNumber
+// (to je jen technické Twilio "from" číslo pro navázání BYOC hovoru —
+// Odorik samo přepíše zobrazené CLIP podle toho, ke které lince patří
+// použité SIP jméno, viz handoff dokument sekce 3, citace Petra Soukupa
+// "tím se převezme id volající linky"). U mobilní linky (790766) je
+// zobrazené CLIP (703614594) JINÉ číslo než Twilio from (266266095) —
+// u pevné linky (793305) jsou obě hodnoty stejné (217217749).
+//
+// TODO (budoucí úklid): tohle by mělo jít časem přesunout do ENV
+// (ODORIK_DISPLAY_CLIP_MOBILNI / ODORIK_DISPLAY_CLIP_PEVNA) a
+// backend by je měl vracet přes getOdorikConfig() — spolu s tím by
+// stálo za to přesunout do ENV/DB i všechna ostatní Odorik čísla,
+// která jsou dnes natvrdo v kódu (SIP jména, veřejná čísla apod.),
+// ať se při jakékoli změně na Odorik straně (jako se to stalo u
+// mobilní linky, proto vůbec vznikla pevná linka) nemusí upravovat
+// zdrojový kód, jen ENV proměnné.
+const ODORIK_LINE_DISPLAY_CLIP: Record<OdorikLine, string> = {
+    mobilni: '703614594',
+    pevna: '217217749',
 };
 
 const Calling: React.FC = () => {
@@ -151,7 +172,6 @@ const Calling: React.FC = () => {
         loadOdorikConfig();
     }, []);
 
-    // ⚠️ NOVÉ — konfigurace aktuálně vybrané Odorik linky
     const activeOdorikLineConfig = odorikConfig?.lines?.[odorikLine];
 
     const maxWorkersAvailable = provider === 'twilio'
@@ -398,7 +418,6 @@ const Calling: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* ⚠️ NOVÉ — výběr Odorik linky, jen když je provider='odorik' */}
                             {provider === 'odorik' && (
                                 <div className="form-group">
                                     <label className="form-label">Odorik linka</label>
@@ -420,11 +439,9 @@ const Calling: React.FC = () => {
                                             );
                                         })}
                                     </div>
-                                    {activeOdorikLineConfig?.phoneNumber && (
-                                        <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
-                                            CLIP: <span style={{ fontFamily: 'monospace', color: 'var(--primary)' }}>{activeOdorikLineConfig.phoneNumber}</span>
-                                        </div>
-                                    )}
+                                    <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
+                                        Zákazník uvidí na displeji: <span style={{ fontFamily: 'monospace', color: 'var(--primary)', fontWeight: 700 }}>{ODORIK_LINE_DISPLAY_CLIP[odorikLine]}</span>
+                                    </div>
                                     {odorikUnavailable && (
                                         <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 6 }}>
                                             ⚠️ Vybraná Odorik linka momentálně nedostupná — žádné SIP jméno není schváleno.
@@ -532,6 +549,11 @@ const Calling: React.FC = () => {
                             <div className="alert alert-warning mb-16">
                                 <div>
                                     Poskytovatel: <strong>{provider === 'twilio' ? '☎️ Twilio (pevná linka)' : `📱 Odorik (${ODORIK_LINE_LABELS[odorikLine].label})`}</strong><br />
+                                    {provider === 'odorik' && (
+                                        <>
+                                            Zákazník uvidí: <strong style={{ fontFamily: 'monospace' }}>{ODORIK_LINE_DISPLAY_CLIP[odorikLine]}</strong><br />
+                                        </>
+                                    )}
                                     Engine: <strong>{ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label}</strong><br />
                                     Agent: <strong>{selectedAgent.name}</strong> — {selectedAgent.description}<br />
                                     Počet hovorů: <strong>{maxCalls.toLocaleString('cs-CZ')}</strong><br />
