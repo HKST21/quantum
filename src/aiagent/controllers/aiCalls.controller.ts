@@ -4,12 +4,13 @@ import { callOrchestrator } from '../services/callOrchestrator';
 import { twilioService } from '../services/twilioService';
 import { BadRequestError, NotFoundError } from '../../utils/errors';
 import { odorikService } from '../services/odorikService';
+import { geminiCallHandler } from '../websockets/geminiCallHandler';
 import {
     StartAICallingRequest, StartAICallingResponse, StopAICallingResponse,
     AICallStatusResponse, AICallLog, AICallLogsQuery, AICallLogsResponse,
-    CallEngine, CallProvider,
+    CallEngine, CallProvider, OdorikLine,
 } from '../types/aiCalls.types';
-import { geminiCallHandler } from '../websockets/geminiCallHandler';
+
 const DEFAULT_AI_AGENT_ID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
 
 // ============================================
@@ -35,14 +36,14 @@ const getWorkerPhoneNumbers = (): string[] => {
 // ============================================
 // POST /api/ai-calls/start
 //
-// ⚠️ SJEDNOCENO — dřív to byly dva oddělené endpointy
-// (startAICalling pro Twilio, startOdorikCalling pro Odorik). Teď je
-// to jeden endpoint se dvěma nezávislými parametry:
-//
-//   provider: 'twilio' | 'odorik'  (default 'twilio' — zpětně kompatibilní)
-//   engine:   'openai' | 'gemini'  (default 'openai' — zpětně kompatibilní)
-//
-// Staré volání bez těchto polí se chová 1:1 jako dřív.
+// Jeden endpoint, tři nezávislé osy:
+//   provider: 'twilio' | 'odorik'  (default 'twilio')
+//   engine:   'openai' | 'gemini'  (default 'openai')
+//   odorikLine: 'mobilni' | 'pevna' (default 'mobilni') — relevantní
+//               jen když provider='odorik'. 'mobilni' = linka 790766
+//               (CLIP 703614594), 'pevna' = linka 793305
+//               (CLIP 217217749). Obě linky sdílí stejný Twilio BYOC
+//               trunk (ODORIK_BYOC_TRUNK_SID) — ověřeno živým testem.
 // ============================================
 export const startAICalling = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -53,6 +54,7 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
             workers = 1,
             provider = 'twilio',
             engine = 'openai',
+            odorikLine = 'mobilni',
         } = req.body as StartAICallingRequest & { agentUserId?: string; workers?: number };
 
         const activeAgentId = agentUserId || process.env.AI_AGENT_USER_ID || DEFAULT_AI_AGENT_ID;
@@ -63,26 +65,27 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
         const validEngines = ['openai', 'gemini'];
         const activeEngine = (validEngines.includes(engine as string) ? engine : 'openai') as CallEngine;
 
-        console.log(`🚀 AI Calling start requested by: ${req.user?.fullName} | Agent: ${activeAgentId}`);
-        console.log('📋 Parameters:', { leadIds, maxCalls, agentUserId: activeAgentId, workers, provider: activeProvider, engine: activeEngine });
+        const validOdorikLines = ['mobilni', 'pevna'];
+        const activeOdorikLine = (validOdorikLines.includes(odorikLine as string) ? odorikLine : 'mobilni') as OdorikLine;
 
-        // Ověř agenta
+        console.log(`🚀 AI Calling start requested by: ${req.user?.fullName} | Agent: ${activeAgentId}`);
+        console.log('📋 Parameters:', { leadIds, maxCalls, agentUserId: activeAgentId, workers, provider: activeProvider, engine: activeEngine, odorikLine: activeProvider === 'odorik' ? activeOdorikLine : undefined });
+
         const agentCheck = await pool.query(
             `SELECT id, full_name FROM users WHERE id = $1 AND is_active = true`,
             [activeAgentId]
         );
         if (agentCheck.rows.length === 0) throw new BadRequestError(`Agent ${activeAgentId} nenalezen`);
 
-        // Načti dostupné identifikátory workerů podle providera
         let callerIdentifiers: string[];
 
         if (activeProvider === 'odorik') {
-            callerIdentifiers = odorikService.getActiveSipNames();
+            callerIdentifiers = odorikService.getActiveSipNames(activeOdorikLine);
             if (callerIdentifiers.length === 0) {
-                throw new BadRequestError('Žádná ODORIK_SIP_NAME_X jména nejsou nakonfigurována v ENV');
+                throw new BadRequestError(`Žádná SIP jména nejsou nakonfigurována pro linku '${activeOdorikLine}'`);
             }
-            if (!process.env.ODORIK_PHONE_NUMBER) {
-                throw new BadRequestError('ODORIK_PHONE_NUMBER není nakonfigurováno v ENV');
+            if (!odorikService.getPhoneNumberForLine(activeOdorikLine)) {
+                throw new BadRequestError(`Odorik CLIP číslo pro linku '${activeOdorikLine}' není nakonfigurováno v ENV`);
             }
         } else {
             callerIdentifiers = getWorkerPhoneNumbers();
@@ -136,7 +139,7 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
                     for (const lead of chunk) {
                         try {
                             console.log(`📞 [Worker ${workerIndex + 1}] Calling ${lead.id} (${lead.phone})...`);
-                            await callOrchestrator.processLead(lead.id, activeAgentId, activeEngine, activeProvider, callerIdentifier);
+                            await callOrchestrator.processLead(lead.id, activeAgentId, activeEngine, activeProvider, callerIdentifier, activeOdorikLine);
                             console.log(`✅ [Worker ${workerIndex + 1}] Done: ${lead.id}`);
                         } catch (error) {
                             console.error(`❌ [Worker ${workerIndex + 1}] Failed: ${lead.id}:`, error);
@@ -153,13 +156,14 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
 
         res.status(200).json({
             success: true,
-            message: `AI calling started: ${actualWorkers} workerů, ${leads.length} leadů (provider=${activeProvider}, engine=${activeEngine})`,
+            message: `AI calling started: ${actualWorkers} workerů, ${leads.length} leadů (provider=${activeProvider}, engine=${activeEngine}${activeProvider === 'odorik' ? `, linka=${activeOdorikLine}` : ''})`,
             queuedLeads: leads.length,
             aiAgentId: activeAgentId,
             agentName: agentCheck.rows[0].full_name,
             workers: actualWorkers,
             provider: activeProvider,
             engine: activeEngine,
+            odorikLine: activeProvider === 'odorik' ? activeOdorikLine : undefined,
             workerIdentifiers: callerIdentifiers.slice(0, actualWorkers),
             leadsPerWorker: workerLeads.map((chunk, i) => ({
                 worker: i + 1,
@@ -298,10 +302,9 @@ export const getTwiML = async (req: Request, res: Response, next: NextFunction):
 // ============================================
 // POST /api/ai-calls/webhook/status-callback
 //
-// ⚠️ NOVÉ (17.8.2026) — na Twilio 'ringing' eventu se pro Gemini
-// hovory spustí prewarm (viz geminiCallHandler.prewarmCall). Pro
-// OpenAI hovory (engine !== 'gemini') se tahle větev vůbec nespustí —
-// nulová změna chování.
+// Na Twilio 'ringing' eventu se pro Gemini hovory spustí prewarm
+// (viz geminiCallHandler.prewarmCall). Pro OpenAI hovory (engine !==
+// 'gemini') se tahle větev vůbec nespustí.
 // ============================================
 export const handleStatusCallback = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -326,8 +329,6 @@ export const handleStatusCallback = async (req: Request, res: Response, next: Ne
 
                 if (result.rows.length > 0 && result.rows[0].engine === 'gemini') {
                     const row = result.rows[0];
-                    // Nečekáme na dokončení prewarmu — webhook musí
-                    // odpovědět rychle, prewarm běží na pozadí.
                     geminiCallHandler.prewarmCall(
                         CallSid,
                         row.lead_id,
@@ -341,8 +342,6 @@ export const handleStatusCallback = async (req: Request, res: Response, next: Ne
                 }
             } catch (err) {
                 console.error('❌ Gemini prewarm lookup error:', err);
-                // Prewarm je jen optimalizace — chyba tady nesmí shodit
-                // status callback ani hovor samotný.
             }
         }
 
@@ -388,13 +387,11 @@ export const handleRecordingCallback = async (req: Request, res: Response, _next
 // ============================================
 // POST /api/ai-calls/test-odorik
 //
-// ⚠️ POZOR — beze změny chování oproti původní verzi: tenhle test
-// endpoint historicky NEVOLÁ odorikService.setForward() a nestaví
-// sip: URI destinaci — jen dial lead.phone přímo s "from" nastaveným
-// na ODORIK_PHONE_NUMBER. Proto se volá s provider='twilio' (ne
-// 'odorik') — kdyby se dal 'odorik', processLead by navíc zavolal
-// setForward(), což tenhle test dřív nedělal. Pro test i setForward
-// kroku použij /start s provider='odorik'.
+// Beze změny chování — historicky NEVOLÁ odorikService.setForward()
+// a nestaví sip: URI destinaci — jen dial lead.phone přímo s "from"
+// nastaveným na ODORIK_PHONE_NUMBER (mobilní linka). Pro test i
+// setForward kroku nebo pevné linky použij /start s
+// provider='odorik' a odorikLine dle potřeby.
 // ============================================
 export const startOdorikTestCall = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -452,76 +449,31 @@ export const startOdorikTestCall = async (req: Request, res: Response, next: Nex
 };
 
 // ============================================
-// POST /api/ai-calls/test-odorik-new-line
-// ⚠️ DOČASNÝ testovací endpoint — ověřuje hypotézu, že stávající
-// Twilio BYOC trunk (ODORIK_BYOC_TRUNK_SID) funguje i pro JINOU
-// Odorik linku, než pro kterou byl původně nastaven (790766).
-// Autentizace na Twilio straně je jen sip:sip.odorik.cz bez
-// credentials v URI — pokud routing/autorizace probíhá na Odorik
-// straně přes Caller ID (from number), nemusí být potřeba samostatný
-// trunk pro každou linku. Tenhle test to ověří naostro.
-//
-// Nepoužívá žádného reálného leada, netvoří žádný záznam v
-// ai_call_logs, jen zavolá Twilio přímo s demo TwiML.
-// ============================================
-export const testOdorikNewLine = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-        const { targetPhone, publicNumber, callerNumber } = req.body as {
-            targetPhone?: string;
-            publicNumber?: string;
-            callerNumber?: string;
-        };
-
-        if (!targetPhone || !publicNumber || !callerNumber) {
-            throw new BadRequestError('targetPhone, publicNumber a callerNumber jsou povinné');
-        }
-
-        if (!process.env.ODORIK_BYOC_TRUNK_SID) {
-            throw new BadRequestError('ODORIK_BYOC_TRUNK_SID není nakonfigurováno v ENV');
-        }
-
-        console.log(`🧪 [TEST NOVÁ LINKA] ${publicNumber} (caller: ${callerNumber}) → ${targetPhone}`);
-
-        // Nastav přesměrování na novém veřejném čísle (setForward si
-        // interně nejdřív smaže staré routes, viz odorikService.ts)
-        await odorikService.setForward(publicNumber, targetPhone);
-
-        const Twilio = require('twilio');
-        const client = Twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-
-        const call = await client.calls.create({
-            to: `sip:${publicNumber}@sip.odorik.cz`,
-            from: callerNumber,
-            url: 'http://demo.twilio.com/docs/voice.xml',
-            byoc: process.env.ODORIK_BYOC_TRUNK_SID, // ← STÁVAJÍCÍ trunk, natvrdo
-        });
-
-        console.log(`✅ [TEST NOVÁ LINKA] Call created: ${call.sid}, status: ${call.status}`);
-
-        res.status(200).json({
-            success: true,
-            callSid: call.sid,
-            status: call.status,
-            to: call.to,
-            from: call.from,
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-// ============================================
 // GET /api/ai-calls/odorik-config
+//
+// ⚠️ ZMĚNA — rozšířeno na OBĚ linky (mobilní 790766, pevná 793305).
+// Response tvar {lines: {mobilni: {...}, pevna: {...}}}, ne plochý
+// jako dřív — frontend (api.ts, Calling.tsx) je aktualizovaný na tenhle
+// tvar zároveň.
 // ============================================
 export const getOdorikConfig = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        const sipNames = odorikService.getActiveSipNames();
-        const odorikNumber = process.env.ODORIK_PHONE_NUMBER || null;
+        const mobilniSipNames = odorikService.getActiveSipNames('mobilni');
+        const pevnaSipNames = odorikService.getActiveSipNames('pevna');
 
         res.status(200).json({
-            sipNames,
-            maxWorkers: sipNames.length,
-            odorikPhoneNumber: odorikNumber,
+            lines: {
+                mobilni: {
+                    sipNames: mobilniSipNames,
+                    maxWorkers: mobilniSipNames.length,
+                    phoneNumber: odorikService.getPhoneNumberForLine('mobilni') || null,
+                },
+                pevna: {
+                    sipNames: pevnaSipNames,
+                    maxWorkers: pevnaSipNames.length,
+                    phoneNumber: odorikService.getPhoneNumberForLine('pevna') || null,
+                },
+            },
         });
     } catch (error) {
         next(error);

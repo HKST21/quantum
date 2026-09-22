@@ -111,14 +111,23 @@ export interface Agent {
     id: string; fullName: string; email: string;
 }
 
-export interface OdorikConfig {
+// ⚠️ ZMĚNA — tvar odpovídá novému backend response {lines: {mobilni, pevna}}
+export interface OdorikLineConfig {
     sipNames: string[];
     maxWorkers: number;
-    odorikPhoneNumber: string | null;
+    phoneNumber: string | null;
+}
+
+export interface OdorikConfig {
+    lines: {
+        mobilni: OdorikLineConfig;
+        pevna: OdorikLineConfig;
+    };
 }
 
 export type CallProvider = 'twilio' | 'odorik';
 export type CallEngine = 'openai' | 'gemini';
+export type OdorikLine = 'mobilni' | 'pevna';
 
 export const getBatchStatus = (agentUserId?: string): Promise<BatchStatus> => {
     const query = agentUserId ? `?agentUserId=${agentUserId}` : '';
@@ -158,11 +167,12 @@ export const startAICalling = (
     agentUserId: string,
     workers: number = 1,
     provider: CallProvider = 'twilio',
-    engine: CallEngine = 'openai'
+    engine: CallEngine = 'openai',
+    odorikLine: OdorikLine = 'mobilni'
 ): Promise<any> =>
     fetchJson('/ai-calls/start', {
         method: 'POST',
-        body: JSON.stringify({ maxCalls, agentUserId, workers, provider, engine }),
+        body: JSON.stringify({ maxCalls, agentUserId, workers, provider, engine, odorikLine }),
     });
 
 export const getAgents = (): Promise<{ users: Agent[] }> =>

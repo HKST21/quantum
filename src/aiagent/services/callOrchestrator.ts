@@ -1,42 +1,5 @@
 // ============================================
 // CALL ORCHESTRATOR — QUANTUM CRM
-//
-// ⚠️ ZÁMĚRNĚ NEKOPÍRUJE celou VF-CRM architekturu (batchLogger,
-// phoneNumberPool/odorikSipPool jako samostatné třídy s acquire/
-// release zámky, carrier validaci). Quantum tohle historicky nemá a
-// není důvod to sem tahat jen kvůli Gemini integraci.
-//
-// NOVĚ oproti původní verzi:
-//   1) `engine: 'openai' | 'gemini'` parametr — routuje na callHandler
-//      nebo geminiCallHandler.
-//   2) `provider: 'twilio' | 'odorik'` parametr — sjednocuje to, co
-//      dřív dělaly dva oddělené flow (startAICalling / startOdorikCalling)
-//      do jednoho processLead. Odorik větev řeší setForward() a SIP URI
-//      destinaci přímo tady (ne přes dočasný přepis lead.phone v DB) —
-//      to odstraňuje závodní riziko mezi souběžnými workery.
-//   3) POLOZIL_TELEFON — dvouvrstvé řešení:
-//        Vrstva A (obecná, PRO OBA ENGINY): pokud Twilio řekne
-//        'completed' A hovor měl reálnou délku (>0s), ale AI nevrátila
-//        žádný outcome → zákazník fyzicky zvedl, jen se nedotáhl
-//        scénář → hung_up → POLOZIL_TELEFON.
-//        Vrstva B (jen Gemini): před tím, než se sáhne po vrstvě A,
-//        Gemini dostane šanci na "posmrtné" vyhodnocení.
-//   4) NOVĚ — dvě prodlevy pro Odorik provider, převzaté z VF-CRM
-//      (12.8.2026 poznatky):
-//        a) ~1.5s prodleva MEZI odorikService.setForward() a
-//           twilioService.initiateCall() — dá Odoriku čas reálně
-//           aplikovat novou routu, než na ni dorazí SIP INVITE od
-//           Twilia. Motivace u VF-CRM: Odorik dávky měly výrazně vyšší
-//           failed rate (28 %) než srovnatelné Twilio dávky (13 %) —
-//           hypotéza je propagační latence na Odorik straně. Proběhne
-//           PŘED vytáčením, zákazníkovi ještě nezvoní telefon — žádný
-//           dopad na kvalitu/latenci samotného hovoru.
-//        b) Náhodná pauza 5–15s POUZE pro Odorik, v `finally` bloku
-//           před uvolněním, po dokončení hovoru — rozbít strojově
-//           pravidelný interval mezi hovory ze stejného Odorik čísla
-//           (signál automatizovaného volání pro spam detekci). Pauza
-//           se spustí jen pokud SIP jméno bylo skutečně použito
-//           (guard `sipNameUsed`), ne při časné chybě před setForward.
 // ============================================
 
 import pool from '../../db/pool';
@@ -44,12 +7,11 @@ import { twilioService } from './twilioService';
 import { odorikService } from './odorikService';
 import { callHandler } from '../websockets/callHandler';
 import { geminiCallHandler } from '../websockets/geminiCallHandler';
-import { AICallOutcome, ConversationOutcome, CallEngine, CallProvider } from '../types/aiCalls.types';
+import { AICallOutcome, ConversationOutcome, CallEngine, CallProvider, OdorikLine } from '../types/aiCalls.types';
 
 const POST_MORTEM_WAIT_ATTEMPTS = 4;
 const POST_MORTEM_WAIT_INTERVAL_MS = 1500;
 
-// ⚠️ NOVÉ — Odorik prodlevy (viz hlavička souboru, bod 4)
 const ODORIK_PROPAGATION_DELAY_MS = 1500;
 const ODORIK_MIN_INTER_CALL_DELAY_MS = 10_000;
 const ODORIK_MAX_INTER_CALL_DELAY_MS = 18_000;
@@ -84,23 +46,27 @@ export class CallOrchestrator {
      * @param engine - 'openai' | 'gemini' (default: 'openai')
      * @param provider - 'twilio' | 'odorik' (default: 'twilio')
      * @param fromNumberOrSipName - pro provider='twilio': AI_PHONE_X
-     *   přidělené workerovi. Pro provider='odorik': ODORIK_SIP_NAME_X
-     *   přidělené workerovi.
+     *   přidělené workerovi. Pro provider='odorik': SIP jméno (z dané
+     *   linky) přidělené workerovi.
+     * @param odorikLine - ⚠️ NOVÉ — 'mobilni' (790766, default) nebo
+     *   'pevna' (793305). Relevantní jen když provider='odorik' —
+     *   určuje, jaké "from" CLIP číslo se použije.
      */
     async processLead(
         leadId: string,
         agentUserId: string,
         engine: CallEngine = 'openai',
         provider: CallProvider = 'twilio',
-        fromNumberOrSipName?: string
+        fromNumberOrSipName?: string,
+        odorikLine: OdorikLine = 'mobilni'
     ): Promise<void> {
         let callSid: string | null = null;
         const isGeminiEngine = engine === 'gemini';
         const isOdorikProvider = provider === 'odorik';
-        let sipNameUsed: string | null = null; // guard pro finally pauzu — nastaví se až PO úspěšném setForward
+        let sipNameUsed: string | null = null;
 
         try {
-            console.log(`🎯 Processing lead: ${leadId} (agent: ${agentUserId}, engine: ${engine}, provider: ${provider}${fromNumberOrSipName ? `, from/sip: ${fromNumberOrSipName}` : ''})`);
+            console.log(`🎯 Processing lead: ${leadId} (agent: ${agentUserId}, engine: ${engine}, provider: ${provider}${isOdorikProvider ? `, linka: ${odorikLine}` : ''}${fromNumberOrSipName ? `, from/sip: ${fromNumberOrSipName}` : ''})`);
 
             const leadResult = await pool.query(
                 `SELECT id, company_name, contact_person, phone, email FROM leads WHERE id = $1`,
@@ -121,9 +87,6 @@ export class CallOrchestrator {
                 [leadId]
             );
 
-            // ============================================
-            // Větev podle providera
-            // ============================================
             let destinationForTwilio: string;
             let callerNumber: string;
 
@@ -133,22 +96,20 @@ export class CallOrchestrator {
                     throw new Error('SIP jméno nebylo předáno pro Odorik provider (fromNumberOrSipName)');
                 }
 
-                console.log(`📡 Odorik SIP jméno: ${sipName} → nastavuji přesměrování na ${lead.phone}`);
+                console.log(`📡 Odorik SIP jméno: ${sipName} (linka: ${odorikLine}) → nastavuji přesměrování na ${lead.phone}`);
                 await odorikService.setForward(sipName, lead.phone);
-                sipNameUsed = sipName; // ← od teď je pauza v finally relevantní
+                sipNameUsed = sipName;
 
-                // ⚠️ NOVÉ — krátká prodleva, aby Odorik stihl novou routu
-                // reálně aplikovat, než dorazí SIP INVITE od Twilia.
-                // Proběhne PŘED vytáčením, zákazníkovi ještě nezvoní
-                // telefon — žádný dopad na kvalitu/latenci hovoru samotného.
                 console.log(`⏳ [Odorik] Čekám ${ODORIK_PROPAGATION_DELAY_MS}ms na propagaci routy...`);
                 await this.sleep(ODORIK_PROPAGATION_DELAY_MS);
 
                 destinationForTwilio = `sip:${sipName}@sip.odorik.cz`;
-                callerNumber = process.env.ODORIK_PHONE_NUMBER || '';
+                // ⚠️ ZMĚNA — dřív natvrdo process.env.ODORIK_PHONE_NUMBER,
+                // teď podle vybrané linky (mobilní/pevná).
+                callerNumber = odorikService.getPhoneNumberForLine(odorikLine);
 
                 if (!callerNumber) {
-                    throw new Error('ODORIK_PHONE_NUMBER není nakonfigurováno v ENV');
+                    throw new Error(`Odorik CLIP číslo pro linku '${odorikLine}' není nakonfigurováno v ENV`);
                 }
             } else {
                 destinationForTwilio = lead.phone;
@@ -199,8 +160,6 @@ export class CallOrchestrator {
                 if (['completed', 'failed', 'busy', 'no-answer'].includes(twilioStatus.status)) {
                     console.log('📞 Twilio call ended:', twilioStatus.status);
 
-                    // ── Vrstva B (jen Gemini): dej post-mortemu šanci
-                    // dorazit, než sáhneme po fallbacku.
                     if (isGeminiEngine && geminiCallHandler.isAwaitingFinalOutcome(callSid)) {
                         console.log('🪦 Post-mortem in flight — čekám na finální outcome před fallbackem:', callSid);
                         for (let attempt = 0; attempt < POST_MORTEM_WAIT_ATTEMPTS; attempt++) {
@@ -224,10 +183,6 @@ export class CallOrchestrator {
                         }
                     }
 
-                    // ── Vrstva A (OBECNÁ, oba enginy): zákazník fyzicky
-                    // zvedl (Twilio 'completed' s reálnou délkou > 0s),
-                    // ale žádný AI outcome nedorazil → POLOZIL_TELEFON,
-                    // ne NEZVEDL_TELEFON.
                     const isPickedUpNoOutcome = twilioStatus.status === 'completed' && (twilioStatus.duration || 0) > 0;
 
                     await this.updateLeadAfterCall(
@@ -273,10 +228,6 @@ export class CallOrchestrator {
 
             throw error;
         } finally {
-            // ⚠️ NOVÉ — náhodná pauza 5–15s POUZE pro Odorik, POUZE když
-            // bylo SIP jméno skutečně použito (sipNameUsed nastaveno až
-            // po úspěšném setForward) — chyba hozená dřív (např. chybějící
-            // sipName parametr) pauzu nespustí.
             if (isOdorikProvider && sipNameUsed) {
                 const delayMs = ODORIK_MIN_INTER_CALL_DELAY_MS
                     + Math.random() * (ODORIK_MAX_INTER_CALL_DELAY_MS - ODORIK_MIN_INTER_CALL_DELAY_MS);
@@ -286,18 +237,6 @@ export class CallOrchestrator {
         }
     }
 
-    /**
-     * Převede Gemini outcome na stejný ConversationOutcome tvar, jaký
-     * produkuje OpenAI flow, aby updateLeadAfterCall mohl zůstat
-     * jednotný pro oba enginy.
-     *
-     * no_answer + viaPostMortem=true → hung_up (POLOZIL_TELEFON):
-     * zákazník prokazatelně zvedl a probíhala konverzace, jen model
-     * nedokázal určit jasný výsledek po zavěšení.
-     *
-     * no_answer bez viaPostMortem (AI samo živě pozná schránku/ticho)
-     * zůstává no_answer → NEZVEDL_TELEFON.
-     */
     private adaptGeminiOutcome(geminiOutcome: { outcome: string; reason: string; confidence: number; viaPostMortem?: boolean }): ConversationOutcome {
         const rawOutcome = (geminiOutcome.outcome === 'no_answer' && geminiOutcome.viaPostMortem === true)
             ? 'hung_up'
@@ -327,7 +266,7 @@ export class CallOrchestrator {
             already_tmobile: 'NEKONTAKTOVAT',
             wrong_person: 'NEKONTAKTOVAT',
             no_answer: 'NEZVEDL_TELEFON',
-            hung_up: 'POLOZIL_TELEFON',   // NOVÉ — vyžaduje DB migraci
+            hung_up: 'POLOZIL_TELEFON',
         };
 
         const outcomeMap: Record<string, AICallOutcome> = {
@@ -338,7 +277,7 @@ export class CallOrchestrator {
             already_tmobile: 'NEKONTAKTOVAT',
             wrong_person: 'NEKONTAKTOVAT',
             no_answer: 'NEZVEDL_TELEFON',
-            hung_up: 'POLOZIL_TELEFON',   // NOVÉ — vyžaduje DB migraci
+            hung_up: 'POLOZIL_TELEFON',
         };
 
         const newStatus = statusMap[outcome.outcome];

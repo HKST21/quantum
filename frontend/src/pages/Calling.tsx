@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
     getBatchStatus, getTwilioNumber, getAvgDuration, getOdorikConfig,
-    startAICalling, BatchStatus, AvgDuration, OdorikConfig, CallProvider, CallEngine,
+    startAICalling, BatchStatus, AvgDuration, OdorikConfig, CallProvider, CallEngine, OdorikLine,
 } from '../api';
 
 type CallingStep = 'setup' | 'reauth' | 'calling' | 'done';
@@ -11,11 +11,6 @@ interface AgentOption {
     name: string;
     description: string;
     pitch: string;
-    // ⚠️ NOVÉ — volitelný přepis pitche pro Gemini, když se text liší
-    // od OpenAI verze (typicky kvůli povinnému "jako AI" — regulatorní
-    // požadavek, který má jen Gemini prompt). Pokud chybí, použije se
-    // `pitch` pro oba enginy (tak je tomu u V5 a u Eva Gemini V2, kde
-    // texty sedí 1:1 / je jen jeden engine).
     pitchGemini?: string;
     secondQuestion?: string;
     successLine: string;
@@ -28,8 +23,6 @@ const AGENTS: AgentOption[] = [
         name: 'Eva V1',
         description: 'VIP ceník do SMS',
         pitch: 'Volám z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?',
-        // ⚠️ Gemini verze má povinné "jako AI" (regulatorní požadavek) —
-        // eva_v1_gemini.ts to má správně, tohle jen sjednocuje náhled v UI.
         pitchGemini: 'Krásný den, slyšíme se? Volám jako AI z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?',
         successLine: 'Skvěle! Kolega se ozve v krátkém hovoru a připraví Vám ho na míru. Hezký den!',
         engines: ['openai', 'gemini'],
@@ -77,11 +70,8 @@ const AGENTS: AgentOption[] = [
     },
 ];
 
-// ⚠️ NOVÉ — preferovaný Gemini agent, na kterého se přepne automaticky
-// při kliknutí na "Gemini" engine přepínač (viz handleEngineChange).
 const GEMINI_DEFAULT_AGENT_ID = 'dab796fa-bf16-4f99-812c-601a031049ce'; // Eva Gemini V2
 
-// Twilio worker konfigurace (statická, odpovídá AI_PHONE_1..5 v ENV backendu)
 const TWILIO_MAX_WORKERS = 5;
 const TWILIO_WORKER_PHONES = [
     '+420228810401',
@@ -96,10 +86,17 @@ const ENGINE_LABELS: Record<CallEngine, { label: string; icon: string }> = {
     gemini: { label: 'Gemini', icon: '✨' },
 };
 
+// ⚠️ NOVÉ — popisky Odorik linek pro UI
+const ODORIK_LINE_LABELS: Record<OdorikLine, { label: string; icon: string; lineNumber: string }> = {
+    mobilni: { label: 'Mobilní (790766)', icon: '📱', lineNumber: '790766' },
+    pevna: { label: 'Pevná (793305)', icon: '☎️', lineNumber: '793305' },
+};
+
 const Calling: React.FC = () => {
     const [step, setStep] = useState<CallingStep>('setup');
     const [provider, setProvider] = useState<CallProvider>('twilio');
     const [engine, setEngine] = useState<CallEngine>('openai');
+    const [odorikLine, setOdorikLine] = useState<OdorikLine>('mobilni');
     const [selectedAgent, setSelectedAgent] = useState<AgentOption>(AGENTS[0]);
     const [maxCalls, setMaxCalls] = useState<number>(100);
     const [workers, setWorkers] = useState<number>(1);
@@ -119,13 +116,6 @@ const Calling: React.FC = () => {
 
     const availableAgents = AGENTS.filter(a => a.engines.includes(engine));
 
-    // ⚠️ ZMĚNA (18.8.2026) — přepínání enginu teď řídí explicitní
-    // handler místo useEffect. Důvod: Eva V1 je kompatibilní s OBĚMA
-    // enginy, takže starý useEffect (který přepínal agenta jen když
-    // aktuální nebyl v availableAgents) by při přechodu Eva V1 →
-    // engine=gemini agenta vůbec nezměnil, protože V1 by pořád "sedělo".
-    // Chceme ale, aby se při kliknutí na Gemini vždy prioritně nabídla
-    // Eva Gemini V2, ne cokoliv, co bylo vybrané předtím.
     const handleEngineChange = (newEngine: CallEngine) => {
         setEngine(newEngine);
 
@@ -137,16 +127,12 @@ const Calling: React.FC = () => {
             }
         }
 
-        // OpenAI (nebo Gemini bez nalezeného preferovaného agenta) —
-        // zachovej aktuálního agenta, pokud je s novým enginem
-        // kompatibilní, jinak padni na první dostupný.
         const stillCompatible = AGENTS.filter(a => a.engines.includes(newEngine));
         if (!stillCompatible.find(a => a.id === selectedAgent.id)) {
             setSelectedAgent(stillCompatible[0]);
         }
     };
 
-    // Odorik config se načítá jednou při mountu - nezávisí na vybraném agentovi.
     useEffect(() => {
         const loadOdorikConfig = async () => {
             try {
@@ -154,21 +140,29 @@ const Calling: React.FC = () => {
                 setOdorikConfig(cfg);
             } catch (err) {
                 console.error('Failed to load Odorik config:', err);
-                setOdorikConfig({ sipNames: [], maxWorkers: 0, odorikPhoneNumber: null });
+                setOdorikConfig({
+                    lines: {
+                        mobilni: { sipNames: [], maxWorkers: 0, phoneNumber: null },
+                        pevna: { sipNames: [], maxWorkers: 0, phoneNumber: null },
+                    },
+                });
             }
         };
         loadOdorikConfig();
     }, []);
 
+    // ⚠️ NOVÉ — konfigurace aktuálně vybrané Odorik linky
+    const activeOdorikLineConfig = odorikConfig?.lines?.[odorikLine];
+
     const maxWorkersAvailable = provider === 'twilio'
         ? TWILIO_MAX_WORKERS
-        : (odorikConfig?.maxWorkers ?? 0);
+        : (activeOdorikLineConfig?.maxWorkers ?? 0);
 
     const workerLabels: string[] = provider === 'twilio'
         ? TWILIO_WORKER_PHONES
-        : (odorikConfig?.sipNames ?? []);
+        : (activeOdorikLineConfig?.sipNames ?? []);
 
-    const odorikUnavailable = provider === 'odorik' && odorikConfig !== null && odorikConfig.maxWorkers === 0;
+    const odorikUnavailable = provider === 'odorik' && odorikConfig !== null && maxWorkersAvailable === 0;
 
     useEffect(() => {
         if (maxWorkersAvailable > 0 && workers > maxWorkersAvailable) {
@@ -255,8 +249,6 @@ const Calling: React.FC = () => {
         setSelectedAgent(availableAgents.find(a => a.id === agentId) || availableAgents[0]);
     };
 
-    // ⚠️ NOVÉ — vybere pitch text podle aktuálního enginu (viz
-    // AgentOption.pitchGemini komentář výše).
     const displayedPitch = engine === 'gemini' && selectedAgent.pitchGemini
         ? selectedAgent.pitchGemini
         : selectedAgent.pitch;
@@ -280,7 +272,7 @@ const Calling: React.FC = () => {
                 return;
             }
 
-            await startAICalling(maxCalls, selectedAgent.id, workers, provider, engine);
+            await startAICalling(maxCalls, selectedAgent.id, workers, provider, engine, odorikLine);
 
             const status = await getBatchStatus(selectedAgent.id);
             setBatchStatus(status);
@@ -361,7 +353,6 @@ const Calling: React.FC = () => {
                                 </select>
                             </div>
 
-                            {/* Pitch preview */}
                             <div style={{ background: '#f8faff', border: '1px solid #c7d7f9', borderRadius: 'var(--radius)', padding: '12px 14px', marginBottom: 16 }}>
                                 <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>
                                     🎙 Pitch věta
@@ -387,7 +378,6 @@ const Calling: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Provider select */}
                             <div className="form-group">
                                 <label className="form-label">Poskytovatel volání</label>
                                 <div style={{ display: 'flex', gap: 8 }}>
@@ -402,23 +392,49 @@ const Calling: React.FC = () => {
                                         type="button"
                                         className={`btn ${provider === 'odorik' ? 'btn-primary' : 'btn-outline'}`}
                                         onClick={() => setProvider('odorik')}
-                                        disabled={odorikConfig === null || odorikConfig.maxWorkers === 0}
-                                        title={odorikUnavailable ? 'Žádné SIP jméno není aktuálně schváleno' : undefined}
                                     >
                                         📱 Odorik (mobilní)
                                     </button>
                                 </div>
-                                {odorikUnavailable && (
-                                    <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 6 }}>
-                                        ⚠️ Odorik momentálně nedostupný — žádné SIP jméno není schváleno.
-                                    </div>
-                                )}
-                                {provider === 'odorik' && (
-                                    <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
-                                        ℹ️ Odorik má prodlevu ~1,5s před vytočením (propagace routy) a 5–15s pauzu mezi hovory.
-                                    </div>
-                                )}
                             </div>
+
+                            {/* ⚠️ NOVÉ — výběr Odorik linky, jen když je provider='odorik' */}
+                            {provider === 'odorik' && (
+                                <div className="form-group">
+                                    <label className="form-label">Odorik linka</label>
+                                    <div style={{ display: 'flex', gap: 8 }}>
+                                        {(Object.keys(ODORIK_LINE_LABELS) as OdorikLine[]).map((line) => {
+                                            const lineConfig = odorikConfig?.lines?.[line];
+                                            const lineUnavailable = odorikConfig !== null && (lineConfig?.maxWorkers ?? 0) === 0;
+                                            return (
+                                                <button
+                                                    key={line}
+                                                    type="button"
+                                                    className={`btn ${odorikLine === line ? 'btn-primary' : 'btn-outline'}`}
+                                                    onClick={() => setOdorikLine(line)}
+                                                    disabled={lineUnavailable}
+                                                    title={lineUnavailable ? 'Žádné SIP jméno není aktuálně schváleno pro tuto linku' : undefined}
+                                                >
+                                                    {ODORIK_LINE_LABELS[line].icon} {ODORIK_LINE_LABELS[line].label}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                    {activeOdorikLineConfig?.phoneNumber && (
+                                        <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
+                                            CLIP: <span style={{ fontFamily: 'monospace', color: 'var(--primary)' }}>{activeOdorikLineConfig.phoneNumber}</span>
+                                        </div>
+                                    )}
+                                    {odorikUnavailable && (
+                                        <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 6 }}>
+                                            ⚠️ Vybraná Odorik linka momentálně nedostupná — žádné SIP jméno není schváleno.
+                                        </div>
+                                    )}
+                                    <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
+                                        ℹ️ Odorik má prodlevu ~1,5s před vytočením (propagace routy) a 10–18s pauzu mezi hovory.
+                                    </div>
+                                </div>
+                            )}
 
                             <div className="form-group">
                                 <label className="form-label">
@@ -515,7 +531,7 @@ const Calling: React.FC = () => {
                         <div className="card-body">
                             <div className="alert alert-warning mb-16">
                                 <div>
-                                    Poskytovatel: <strong>{provider === 'twilio' ? '☎️ Twilio (pevná linka)' : '📱 Odorik (mobilní)'}</strong><br />
+                                    Poskytovatel: <strong>{provider === 'twilio' ? '☎️ Twilio (pevná linka)' : `📱 Odorik (${ODORIK_LINE_LABELS[odorikLine].label})`}</strong><br />
                                     Engine: <strong>{ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label}</strong><br />
                                     Agent: <strong>{selectedAgent.name}</strong> — {selectedAgent.description}<br />
                                     Počet hovorů: <strong>{maxCalls.toLocaleString('cs-CZ')}</strong><br />
@@ -545,7 +561,7 @@ const Calling: React.FC = () => {
             {step === 'calling' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div style={{ background: 'var(--primary-light)', border: '1px solid #bfdbfe', borderRadius: 'var(--radius)', padding: '8px 14px', fontSize: 13, color: 'var(--primary)', fontWeight: 600, marginBottom: 12 }}>
-                        🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {provider === 'twilio' ? '☎️ Twilio' : '📱 Odorik'} · {workers} worker{workers > 1 ? 'y' : ''} · „{displayedPitch.slice(0, 55)}..."
+                        🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {provider === 'twilio' ? '☎️ Twilio' : `📱 Odorik ${ODORIK_LINE_LABELS[odorikLine].label}`} · {workers} worker{workers > 1 ? 'y' : ''} · „{displayedPitch.slice(0, 55)}..."
                     </div>
                     <div className="live-feed mb-16">
                         <span className="live-dot" />

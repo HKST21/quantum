@@ -17,6 +17,22 @@ export type AICallOutcome =
 export type CallEngine = 'openai' | 'gemini';
 export type CallProvider = 'twilio' | 'odorik';
 
+// ⚠️ NOVÉ — dvě Odorik linky, liší se CLIP a sadou SIP jmen, sdílejí
+// stejný Twilio BYOC trunk. 'mobilni' = 790766 (výchozí, zachovává
+// dosavadní chování), 'pevna' = 793305.
+export type OdorikLine = 'mobilni' | 'pevna';
+
+
+export interface StartAICallingRequest {
+    leadIds?: string[];
+    maxCalls?: number;
+    agentUserId?: string;
+    workers?: number;
+    provider?: CallProvider;
+    engine?: CallEngine;
+    odorikLine?: OdorikLine;   // ← NOVÉ
+}
+
 export interface ConversationOutcome {
     outcome:
         | 'interested'

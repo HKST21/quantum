@@ -1,5 +1,6 @@
 import axios, { AxiosError } from 'axios';
 import { createAlertThrottled } from '../../services/alertsService';
+import { OdorikLine } from '../types/aiCalls.types';
 
 // ============================================================================
 // ODORIK SERVICE
@@ -9,11 +10,32 @@ import { createAlertThrottled } from '../../services/alertsService';
 //
 // Autentizace: user + password jako form parametry (ne HTTP Basic Auth!).
 // Odorik API očekává credentials přímo v POST body / query stringu.
-// Ověřeno v oficiálních PHP/Ruby příkladech od Odoriku.
 //
 // Dokumentace: https://www.odorik.cz/w/api:public_numbers
 //
 // Při chybách vytváří alerty přes alertsService (throttled aby nespammoval).
+//
+// ⚠️ NOVÉ (21.9.2026) — DVĚ ODORIK LINKY:
+//   Kromě původní mobilní linky 790766 (CLIP 703614594, SIP jména
+//   ODORIK_SIP_NAME_1/2 = hejda_test1/hejda_test2) je teď k dispozici
+//   i pevná linka 793305 (CLIP 217217749, SIP jméno
+//   ODORIK_PEVNA_SIP_NAME_1 = hejda_pevna1). Obě linky sdílejí STEJNÝ
+//   Twilio BYOC trunk (ODORIK_BYOC_TRUNK_SID) — ověřeno naostro živým
+//   testovacím hovorem, žádný druhý trunk není potřeba. Liší se jen
+//   "from" číslo (CLIP) a sada SIP jmen.
+//
+//   getActiveSipNames()/getPhoneNumberForLine() teď berou parametr
+//   `line`, default 'mobilni' zachovává 1:1 dosavadní chování pro
+//   volající kód, který parametr nepředá.
+//
+// ⚠️ OPRAVA (21.9.2026) — setForward() dřív logoval "✅ Odorik forward
+//   set" jen podle HTTP statusu 200, i když response.data obsahovalo
+//   { errors: [...] } (Odorik API vrací chybu s HTTP 200, ne s chybovým
+//   statusem). Narazili jsme na to naživo s neregistrovaným veřejným
+//   číslem (chyba "nonexisting_public_number") — kód to tiše nahlásil
+//   jako úspěch, i když se přesměrování ve skutečnosti nenastavilo.
+//   Teď se response.data.errors kontroluje explicitně a v tom případě
+//   se vyhodí chyba, ne tichý false-positive úspěch.
 // ============================================================================
 
 const ODORIK_API_BASE_URL = 'https://www.odorik.cz/api/v1';
@@ -34,21 +56,23 @@ export class OdorikService {
     }
 
     /**
-     * Vrátí seznam aktivně nakonfigurovaných Odorik SIP jmen z ENV.
-     * Čte ODORIK_SIP_NAME_1, _2, _3... dokud nenarazí na mezeru.
+     * Vrátí seznam aktivně nakonfigurovaných Odorik SIP jmen z ENV pro
+     * danou linku. Čte ODORIK_SIP_NAME_1, _2... (mobilní linka) nebo
+     * ODORIK_PEVNA_SIP_NAME_1, _2... (pevná linka), dokud nenarazí na
+     * mezeru.
      *
-     * JEDINÝ zdroj pravdy pro to, kolik Odorik workerů je k dispozici.
-     * Používá se jak v GET /odorik-config endpointu (pro frontend),
-     * tak v startOdorikCalling (pro samotné spuštění dávky).
+     * JEDINÝ zdroj pravdy pro to, kolik Odorik workerů je k dispozici
+     * pro danou linku. Do ENV se smí dávat POUZE SIP jména schválená
+     * Odorik/T-Mobile — tenhle seznam se bere jako závazný.
      *
-     * Do ENV se smí dávat POUZE SIP jména schválená Odorik/T-Mobile -
-     * tenhle seznam se bere jako závazný, žádný extra whitelist se nekontroluje.
+     * @param line - 'mobilni' (790766, default) nebo 'pevna' (793305)
      */
-    getActiveSipNames(): string[] {
+    getActiveSipNames(line: OdorikLine = 'mobilni'): string[] {
+        const prefix = line === 'pevna' ? 'ODORIK_PEVNA_SIP_NAME_' : 'ODORIK_SIP_NAME_';
         const sipNames: string[] = [];
         let i = 1;
         while (true) {
-            const name = process.env[`ODORIK_SIP_NAME_${i}`];
+            const name = process.env[`${prefix}${i}`];
             if (!name) break;
             sipNames.push(name);
             i++;
@@ -57,10 +81,18 @@ export class OdorikService {
     }
 
     /**
+     * ⚠️ NOVÉ — vrátí "from" telefonní číslo (CLIP) pro danou linku.
+     * Mobilní linka (790766) → ODORIK_PHONE_NUMBER (beze změny, stejná
+     * proměnná jako dřív). Pevná linka (793305) → ODORIK_PEVNA_PHONE_NUMBER.
+     */
+    getPhoneNumberForLine(line: OdorikLine = 'mobilni'): string {
+        return line === 'pevna'
+            ? process.env.ODORIK_PEVNA_PHONE_NUMBER || ''
+            : process.env.ODORIK_PHONE_NUMBER || '';
+    }
+
+    /**
      * Konvertuje český telefonní číslo do Odorik formátu s prefixem *087.
-     *
-     * Vstup: '+420703034160' nebo '00420703034160' nebo '703034160'
-     * Výstup: '*08700420703034160' (prefix *087 + mezinárodní formát BEZ +)
      */
     private formatRingingNumber(phoneNumber: string): string {
         let cleaned = phoneNumber.replace(/[\s\-()+ ]/g, '');
@@ -81,7 +113,8 @@ export class OdorikService {
     }
 
     /**
-     * Získá aktuální seznam routes pro SIP jméno.
+     * Získá aktuální seznam routes pro SIP jméno. Nezávisí na lince —
+     * SIP jméno samo o sobě jednoznačně identifikuje cíl v Odorik API.
      */
     async getRoutes(sipName: string): Promise<any[]> {
         if (!this.apiUser || !this.apiPassword) {
@@ -191,6 +224,13 @@ export class OdorikService {
 
     /**
      * Nastaví dynamické přesměrování SIP jména na cílové telefonní číslo.
+     *
+     * ⚠️ OPRAVA (21.9.2026) — response.data.errors se teď kontroluje
+     * explicitně. Odorik API vrací chybu jako HTTP 200 s
+     * { errors: [...] } v těle, ne jako chybový HTTP status — bez téhle
+     * kontroly se to dřív tiše nahlásilo jako úspěch (viz hlavička
+     * souboru, chyba "nonexisting_public_number" u neregistrovaného
+     * čísla).
      */
     async setForward(sipName: string, targetPhone: string): Promise<boolean> {
         if (!this.apiUser || !this.apiPassword) {
@@ -222,6 +262,22 @@ export class OdorikService {
                     timeout: 10000,
                 }
             );
+
+            // ⚠️ NOVÉ — Odorik API vrací chyby s HTTP 200, ne chybovým
+            // statusem. Bez téhle kontroly by se chyba tiše nahlásila
+            // jako úspěch.
+            if (response.data && response.data.errors) {
+                console.error(`❌ Odorik setForward vrátilo chybu (HTTP 200, ale s errors):`, response.data.errors);
+
+                await createAlertThrottled({
+                    type: 'ODORIK_API_ERROR',
+                    message: `Odorik API vrátilo chybu při setForward pro ${sipName}: ${JSON.stringify(response.data.errors)}`,
+                    severity: 'error',
+                    metadata: { sipName, targetPhone, errors: response.data.errors },
+                });
+
+                throw new Error(`Odorik setForward error: ${JSON.stringify(response.data.errors)}`);
+            }
 
             console.log(`✅ Odorik forward set: ${sipName} → ${ringingNumber}`, {
                 status: response.status,
