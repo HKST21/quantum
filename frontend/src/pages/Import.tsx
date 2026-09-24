@@ -7,8 +7,35 @@ interface ImportSummary {
     invalid: number;
 }
 
+// ⚠️ NOVÉ (24.9.2026) — seznam agentů pro výběr cílového přiřazení
+// importu. Stejný vzor jako AGENTS pole v Dashboard.tsx/Calling.tsx
+// (zatím se v kódu nesdílí jeden společný zdroj — potenciální budoucí
+// úklid, ale zachovávám konzistenci se stávajícím stylem projektu).
+// Výchozí hodnota (AGENTS[0]) = Eva V1 = stejné UUID jako
+// DEFAULT_AI_AGENT_ID na backendu, takže default chování zůstává
+// 1:1 stejné jako dřív, pokud uživatel dropdown nezmění.
+interface AgentOption {
+    id: string;
+    name: string;
+    description: string;
+}
+
+const AGENTS: AgentOption[] = [
+    { id: '53c65ca7-68bc-4948-83e5-35a64c17f0fb', name: 'Eva V1', description: 'VIP ceník do SMS' },
+    { id: 'aeec78ff-a86b-4cab-b33a-adeb7c94f08e', name: 'Eva V2', description: 'Šetříme klientům až 40%' },
+    { id: 'e7a469bb-4783-4f96-b961-03dd503e5bfa', name: 'Eva V3', description: 'Nepřeplácíte za služby?' },
+    { id: 'f4adb349-70c3-4e63-8670-81f6c177f61d', name: 'Eva V4', description: 'Zjednodušený VIP ceník (krátký pitch)' },
+    { id: 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9', name: 'Eva V5', description: 'Dvoustupňová kvalifikace' },
+    { id: 'dab796fa-bf16-4f99-812c-601a031049ce', name: 'Eva Gemini V2', description: 'Zjednodušený VIP ceník (Gemini)' },
+    { id: '99142508-1483-4ea2-ba9f-c35a9ecdc69f', name: 'Eva FB V6', description: 'Facebook leady — skript 1' },
+    { id: '773db522-8df4-4903-9b4f-019b8b0969b5', name: 'Eva FB V7', description: 'Facebook leady — skript 2' },
+    { id: 'a2a7c4f6-1b90-4b64-8899-451dca563c96', name: 'Eva FB V8', description: 'Facebook leady — skript 3' },
+    { id: '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d', name: 'Eva FB V9', description: 'Facebook leady — skript 4' },
+];
+
 const Import: React.FC = () => {
     const [file, setFile] = useState<File | null>(null);
+    const [agentId, setAgentId] = useState<string>(AGENTS[0].id); // ← NOVÉ, default = Eva V1 (beze změny chování)
     const [loading, setLoading] = useState(false);
     const [result, setResult] = useState<{ success: boolean; summary: ImportSummary; invalidNumbers: string[] } | null>(null);
     const [error, setError] = useState('');
@@ -42,6 +69,7 @@ const Import: React.FC = () => {
         try {
             const formData = new FormData();
             formData.append('file', file);
+            formData.append('agentUserId', agentId); // ← NOVÉ — dřív se neposílalo vůbec
 
             const res = await fetch('/api/ai-calls/import-leads', {
                 method: 'POST',
@@ -71,6 +99,8 @@ const Import: React.FC = () => {
         if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
+    const selectedAgentName = AGENTS.find(a => a.id === agentId)?.name || 'vybranému agentovi';
+
     return (
         <div>
             <div className="page-header">
@@ -91,7 +121,7 @@ const Import: React.FC = () => {
                             <li>Podporované formáty: <code>605524894</code>, <code>+420605524894</code>, <code>420605524894</code></li>
                             <li>Header řádek se automaticky přeskočí</li>
                             <li>Duplicitní čísla se přeskočí (kontrola přes celou DB)</li>
-                            <li>Leady budou přiřazeny Evě (AI Agent) se statusem NOVY</li>
+                            <li>Leady budou přiřazeny vybranému AI agentovi se statusem NOVY</li>
                         </ul>
                     </div>
                 </div>
@@ -100,6 +130,26 @@ const Import: React.FC = () => {
                 {!result && (
                     <div className="card mb-16">
                         <div className="card-body">
+
+                            {/* ⚠️ NOVÉ — výběr cílového agenta, PŘED drag&drop zónou */}
+                            <div className="form-group">
+                                <label className="form-label">Cílový AI agent</label>
+                                <select
+                                    className="form-select"
+                                    value={agentId}
+                                    onChange={(e) => setAgentId(e.target.value)}
+                                >
+                                    {AGENTS.map(agent => (
+                                        <option key={agent.id} value={agent.id}>
+                                            {agent.name} — {agent.description}
+                                        </option>
+                                    ))}
+                                </select>
+                                <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
+                                    Všechny naimportované leady se přiřadí tomuto agentovi.
+                                </div>
+                            </div>
+
                             {/* Drag & Drop zóna */}
                             <div
                                 onDrop={handleDrop}
@@ -206,7 +256,7 @@ const Import: React.FC = () => {
 
                             {result.summary.inserted > 0 && (
                                 <div className="alert alert-success mb-16">
-                                    🎉 Úspěšně importováno <strong>{result.summary.inserted.toLocaleString('cs-CZ')} čísel</strong> jako NOVY leady přiřazené Evě.
+                                    🎉 Úspěšně importováno <strong>{result.summary.inserted.toLocaleString('cs-CZ')} čísel</strong> jako NOVY leady přiřazené agentovi <strong>{selectedAgentName}</strong>.
                                 </div>
                             )}
 
