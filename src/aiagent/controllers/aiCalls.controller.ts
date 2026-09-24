@@ -460,6 +460,7 @@ export const getOdorikConfig = async (_req: Request, res: Response, next: NextFu
     try {
         const mobilniSipNames = odorikService.getActiveSipNames('mobilni');
         const pevnaSipNames = odorikService.getActiveSipNames('pevna');
+        const fbIdentities = odorikService.getIdentitiesForLine('fb');
 
         res.status(200).json({
             lines: {
@@ -472,6 +473,10 @@ export const getOdorikConfig = async (_req: Request, res: Response, next: NextFu
                     sipNames: pevnaSipNames,
                     maxWorkers: pevnaSipNames.length,
                     phoneNumber: odorikService.getPhoneNumberForLine('pevna') || null,
+                },
+                fb: {
+                    identities: fbIdentities,
+                    maxWorkers: fbIdentities.length,
                 },
             },
         });
