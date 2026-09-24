@@ -20,7 +20,7 @@ export type CallProvider = 'twilio' | 'odorik';
 // ⚠️ NOVÉ — dvě Odorik linky, liší se CLIP a sadou SIP jmen, sdílejí
 // stejný Twilio BYOC trunk. 'mobilni' = 790766 (výchozí, zachovává
 // dosavadní chování), 'pevna' = 793305.
-export type OdorikLine = 'mobilni' | 'pevna';
+export type OdorikLine = 'mobilni' | 'pevna' | 'fb';
 
 
 export interface StartAICallingRequest {

@@ -15,30 +15,38 @@ import { OdorikLine } from '../types/aiCalls.types';
 //
 // Při chybách vytváří alerty přes alertsService (throttled aby nespammoval).
 //
-// ⚠️ NOVÉ (21.9.2026) — DVĚ ODORIK LINKY:
-//   Kromě původní mobilní linky 790766 (CLIP 703614594, SIP jména
-//   ODORIK_SIP_NAME_1/2 = hejda_test1/hejda_test2) je teď k dispozici
-//   i pevná linka 793305 (CLIP 217217749, SIP jméno
-//   ODORIK_PEVNA_SIP_NAME_1 = hejda_pevna1). Obě linky sdílejí STEJNÝ
-//   Twilio BYOC trunk (ODORIK_BYOC_TRUNK_SID) — ověřeno naostro živým
-//   testovacím hovorem, žádný druhý trunk není potřeba. Liší se jen
-//   "from" číslo (CLIP) a sada SIP jmen.
+// ⚠️ (21.9.2026) — DVĚ ODORIK LINKY (mobilní 790766, pevná 793305):
+//   Obě sdílejí STEJNÝ Twilio BYOC trunk. Liší se jen "from" číslo (CLIP)
+//   a sada SIP jmen.
 //
-//   getActiveSipNames()/getPhoneNumberForLine() teď berou parametr
-//   `line`, default 'mobilni' zachovává 1:1 dosavadní chování pro
-//   volající kód, který parametr nepředá.
+// ⚠️ (24.9.2026) — TŘETÍ SKUPINA: FB linky (7× samostatná pevná linka,
+//   KAŽDÁ S VLASTNÍM CLIP — na rozdíl od mobilní/pevné skupiny, kde
+//   všechny SIP jména ve skupině sdílejí jedno společné CLIP). To
+//   vyžaduje nový model — "identita" jako pár (sipName, fromNumber),
+//   ne odděleně "seznam SIP jmen" + "jedno sdílené číslo". Viz
+//   getIdentitiesForLine() níže. Stávající getActiveSipNames() /
+//   getPhoneNumberForLine() zůstávají BEZE ZMĚNY (pro mobilní/pevnou
+//   linku je pořád validní model "N jmen, 1 sdílené číslo") —
+//   getIdentitiesForLine() je nadstavba, která je pro tyhle dvě
+//   skupiny z nich sama sestaví ekvivalentní identity, a pro 'fb'
+//   čte nové párované ENV proměnné.
 //
 // ⚠️ OPRAVA (21.9.2026) — setForward() dřív logoval "✅ Odorik forward
 //   set" jen podle HTTP statusu 200, i když response.data obsahovalo
 //   { errors: [...] } (Odorik API vrací chybu s HTTP 200, ne s chybovým
-//   statusem). Narazili jsme na to naživo s neregistrovaným veřejným
-//   číslem (chyba "nonexisting_public_number") — kód to tiše nahlásil
-//   jako úspěch, i když se přesměrování ve skutečnosti nenastavilo.
-//   Teď se response.data.errors kontroluje explicitně a v tom případě
-//   se vyhodí chyba, ne tichý false-positive úspěch.
+//   statusem). Teď se response.data.errors kontroluje explicitně.
 // ============================================================================
 
 const ODORIK_API_BASE_URL = 'https://www.odorik.cz/api/v1';
+
+// ⚠️ NOVÉ (24.9.2026) — jedna identita = jedno SIP jméno + jeho VLASTNÍ
+// "from" číslo. Pro mobilní/pevnou linku mají všechny identity ve
+// skupině stejné fromNumber (degenerovaný případ). Pro FB skupinu má
+// každá identita jiné fromNumber.
+export interface OdorikIdentity {
+    sipName: string;
+    fromNumber: string;
+}
 
 export class OdorikService {
     private apiUser: string;
@@ -57,18 +65,23 @@ export class OdorikService {
 
     /**
      * Vrátí seznam aktivně nakonfigurovaných Odorik SIP jmen z ENV pro
-     * danou linku. Čte ODORIK_SIP_NAME_1, _2... (mobilní linka) nebo
-     * ODORIK_PEVNA_SIP_NAME_1, _2... (pevná linka), dokud nenarazí na
-     * mezeru.
+     * danou linku. Čte ODORIK_SIP_NAME_1, _2... (mobilní linka),
+     * ODORIK_PEVNA_SIP_NAME_1, _2... (pevná linka), nebo
+     * ODORIK_FB_SIP_NAME_1, _2... (FB linky), dokud nenarazí na mezeru.
      *
      * JEDINÝ zdroj pravdy pro to, kolik Odorik workerů je k dispozici
-     * pro danou linku. Do ENV se smí dávat POUZE SIP jména schválená
-     * Odorik/T-Mobile — tenhle seznam se bere jako závazný.
+     * pro danou linku/skupinu. Do ENV se smí dávat POUZE SIP jména
+     * schválená Odorik/T-Mobile — tenhle seznam se bere jako závazný.
      *
-     * @param line - 'mobilni' (790766, default) nebo 'pevna' (793305)
+     * ⚠️ Pro 'fb' vrací jen jména (bez jejich CLIP) — pokud potřebuješ
+     * i CLIP, použij getIdentitiesForLine('fb'), ne tuhle metodu.
      */
     getActiveSipNames(line: OdorikLine = 'mobilni'): string[] {
-        const prefix = line === 'pevna' ? 'ODORIK_PEVNA_SIP_NAME_' : 'ODORIK_SIP_NAME_';
+        const prefix = line === 'pevna'
+            ? 'ODORIK_PEVNA_SIP_NAME_'
+            : line === 'fb'
+                ? 'ODORIK_FB_SIP_NAME_'
+                : 'ODORIK_SIP_NAME_';
         const sipNames: string[] = [];
         let i = 1;
         while (true) {
@@ -81,14 +94,72 @@ export class OdorikService {
     }
 
     /**
-     * ⚠️ NOVÉ — vrátí "from" telefonní číslo (CLIP) pro danou linku.
-     * Mobilní linka (790766) → ODORIK_PHONE_NUMBER (beze změny, stejná
-     * proměnná jako dřív). Pevná linka (793305) → ODORIK_PEVNA_PHONE_NUMBER.
+     * Vrátí "from" telefonní číslo (CLIP) pro danou linku. Mobilní
+     * linka (790766) → ODORIK_PHONE_NUMBER. Pevná linka (793305) →
+     * ODORIK_PEVNA_PHONE_NUMBER.
+     *
+     * ⚠️ NEPOUŽÍVAT pro 'fb' — FB skupina nemá jedno sdílené CLIP,
+     * každá identita má vlastní (viz getIdentitiesForLine). Volání
+     * s line='fb' vrátí prázdný string.
      */
     getPhoneNumberForLine(line: OdorikLine = 'mobilni'): string {
+        if (line === 'fb') {
+            console.warn('⚠️ getPhoneNumberForLine() zavoláno s line=fb — FB skupina nemá sdílené CLIP, použij getIdentitiesForLine(\'fb\')');
+            return '';
+        }
         return line === 'pevna'
             ? process.env.ODORIK_PEVNA_PHONE_NUMBER || ''
             : process.env.ODORIK_PHONE_NUMBER || '';
+    }
+
+    /**
+     * ⚠️ NOVÉ (24.9.2026) — vrátí kompletní seznam identit (SIP jméno +
+     * VLASTNÍ from-číslo) pro danou linku/skupinu. Tohle je metoda,
+     * kterou by mělo používat všechno NOVÉ volající místo (rotující
+     * mód, FB volání) — sjednocuje "SIP jméno" a "číslo, co se pošle
+     * jako Twilio from" do jedné konzistentní dvojice, aby nemohlo
+     * dojít k nesourodému spárování (např. SIP jméno linky 3 + CLIP
+     * linky 5).
+     *
+     * Pro 'mobilni'/'pevna': sestaví identity ze stávajících
+     * getActiveSipNames()/getPhoneNumberForLine() — VŠECHNY identity
+     * ve skupině dostanou STEJNÉ fromNumber (odpovídá dnešní realitě,
+     * kde hejda_test1 i hejda_test2 obě ukazují 703614594).
+     *
+     * Pro 'fb': čte NOVĚ párované ODORIK_FB_SIP_NAME_X /
+     * ODORIK_FB_CLIP_X — každá identita má SVÉ VLASTNÍ fromNumber.
+     * Pokud pro některý index chybí ODORIK_FB_CLIP_X (nastavené jen
+     * SIP jméno, ne CLIP, nebo naopak), ten index se PŘESKOČÍ a
+     * vypíše se warning — bezpečnější než vytvořit identitu s
+     * prázdným/nesprávným číslem.
+     */
+    getIdentitiesForLine(line: OdorikLine = 'mobilni'): OdorikIdentity[] {
+        if (line === 'fb') {
+            const identities: OdorikIdentity[] = [];
+            let i = 1;
+            while (true) {
+                const sipName = process.env[`ODORIK_FB_SIP_NAME_${i}`];
+                const fromNumber = process.env[`ODORIK_FB_CLIP_${i}`];
+
+                if (!sipName && !fromNumber) break; // konec sekvence
+
+                if (!sipName || !fromNumber) {
+                    console.warn(`⚠️ FB identita #${i} neúplná (sipName: ${sipName || 'CHYBÍ'}, fromNumber: ${fromNumber || 'CHYBÍ'}) — přeskakuji`);
+                    i++;
+                    continue;
+                }
+
+                identities.push({ sipName, fromNumber });
+                i++;
+            }
+            return identities;
+        }
+
+        // mobilni / pevna — zpětně kompatibilní sestavení ze
+        // stávajících metod, žádná změna jejich chování.
+        const sipNames = this.getActiveSipNames(line);
+        const sharedFromNumber = this.getPhoneNumberForLine(line);
+        return sipNames.map(sipName => ({ sipName, fromNumber: sharedFromNumber }));
     }
 
     /**
@@ -225,12 +296,9 @@ export class OdorikService {
     /**
      * Nastaví dynamické přesměrování SIP jména na cílové telefonní číslo.
      *
-     * ⚠️ OPRAVA (21.9.2026) — response.data.errors se teď kontroluje
-     * explicitně. Odorik API vrací chybu jako HTTP 200 s
-     * { errors: [...] } v těle, ne jako chybový HTTP status — bez téhle
-     * kontroly se to dřív tiše nahlásilo jako úspěch (viz hlavička
-     * souboru, chyba "nonexisting_public_number" u neregistrovaného
-     * čísla).
+     * ⚠️ response.data.errors se kontroluje explicitně — Odorik API
+     * vrací chybu jako HTTP 200 s { errors: [...] } v těle, ne jako
+     * chybový HTTP status.
      */
     async setForward(sipName: string, targetPhone: string): Promise<boolean> {
         if (!this.apiUser || !this.apiPassword) {
@@ -263,9 +331,6 @@ export class OdorikService {
                 }
             );
 
-            // ⚠️ NOVÉ — Odorik API vrací chyby s HTTP 200, ne chybovým
-            // statusem. Bez téhle kontroly by se chyba tiše nahlásila
-            // jako úspěch.
             if (response.data && response.data.errors) {
                 console.error(`❌ Odorik setForward vrátilo chybu (HTTP 200, ale s errors):`, response.data.errors);
 
