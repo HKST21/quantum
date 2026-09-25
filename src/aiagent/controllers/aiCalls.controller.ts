@@ -8,7 +8,7 @@ import { geminiCallHandler } from '../websockets/geminiCallHandler';
 import {
     StartAICallingRequest, StartAICallingResponse, StopAICallingResponse,
     AICallStatusResponse, AICallLog, AICallLogsQuery, AICallLogsResponse,
-    CallEngine, CallProvider, OdorikLine,
+    CallEngine, CallProvider, OdorikLine, CallMode,
 } from '../types/aiCalls.types';
 
 const DEFAULT_AI_AGENT_ID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
@@ -36,14 +36,17 @@ const getWorkerPhoneNumbers = (): string[] => {
 // ============================================
 // POST /api/ai-calls/start
 //
-// Jeden endpoint, tři nezávislé osy:
+// Čtyři nezávislé osy:
 //   provider: 'twilio' | 'odorik'  (default 'twilio')
 //   engine:   'openai' | 'gemini'  (default 'openai')
-//   odorikLine: 'mobilni' | 'pevna' (default 'mobilni') — relevantní
-//               jen když provider='odorik'. 'mobilni' = linka 790766
-//               (CLIP 703614594), 'pevna' = linka 793305
-//               (CLIP 217217749). Obě linky sdílí stejný Twilio BYOC
-//               trunk (ODORIK_BYOC_TRUNK_SID) — ověřeno živým testem.
+//   odorikLine: 'mobilni' | 'pevna' | 'fb' (default 'mobilni') —
+//               relevantní jen když provider='odorik'
+//   callMode: 'parallel' | 'rotating' (default 'parallel') — NOVÉ
+//             (24.9.2026). 'parallel' = dosavadní chování beze
+//             změny. 'rotating' = sekvenční zpracování s rotující
+//             identitou (SIP jméno + vlastní CLIP) mezi hovory —
+//             určeno primárně pro 'fb' linku (7 identit, každá
+//             vlastní CLIP, anti-spam rozprostření zátěže).
 // ============================================
 export const startAICalling = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -55,6 +58,7 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
             provider = 'twilio',
             engine = 'openai',
             odorikLine = 'mobilni',
+            callMode = 'parallel',
         } = req.body as StartAICallingRequest & { agentUserId?: string; workers?: number };
 
         const activeAgentId = agentUserId || process.env.AI_AGENT_USER_ID || DEFAULT_AI_AGENT_ID;
@@ -65,11 +69,23 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
         const validEngines = ['openai', 'gemini'];
         const activeEngine = (validEngines.includes(engine as string) ? engine : 'openai') as CallEngine;
 
-        const validOdorikLines = ['mobilni', 'pevna'];
+        const validOdorikLines = ['mobilni', 'pevna', 'fb'];
         const activeOdorikLine = (validOdorikLines.includes(odorikLine as string) ? odorikLine : 'mobilni') as OdorikLine;
 
+        const validCallModes = ['parallel', 'rotating'];
+        const activeCallMode = (validCallModes.includes(callMode as string) ? callMode : 'parallel') as CallMode;
+
+        // ⚠️ NOVÉ (24.9.2026) — bezpečnostní pojistka: FB skupina nemá
+        // sdílené CLIP (každá identita má vlastní), takže 'parallel'
+        // mód by volal getPhoneNumberForLine('fb') → prázdný string →
+        // pád s nejasnou chybou. Radši explicitní, srozumitelná chyba
+        // hned na vstupu.
+        if (activeProvider === 'odorik' && activeOdorikLine === 'fb' && activeCallMode === 'parallel') {
+            throw new BadRequestError('FB linka podporuje pouze callMode="rotating" (každá ze 7 identit má vlastní CLIP, sdílené číslo pro parallel mód neexistuje)');
+        }
+
         console.log(`🚀 AI Calling start requested by: ${req.user?.fullName} | Agent: ${activeAgentId}`);
-        console.log('📋 Parameters:', { leadIds, maxCalls, agentUserId: activeAgentId, workers, provider: activeProvider, engine: activeEngine, odorikLine: activeProvider === 'odorik' ? activeOdorikLine : undefined });
+        console.log('📋 Parameters:', { leadIds, maxCalls, agentUserId: activeAgentId, workers, provider: activeProvider, engine: activeEngine, odorikLine: activeProvider === 'odorik' ? activeOdorikLine : undefined, callMode: activeCallMode });
 
         const agentCheck = await pool.query(
             `SELECT id, full_name FROM users WHERE id = $1 AND is_active = true`,
@@ -77,6 +93,82 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
         );
         if (agentCheck.rows.length === 0) throw new BadRequestError(`Agent ${activeAgentId} nenalezen`);
 
+        // ── Načtení leadů — společné pro OBA módy (parallel i rotating)
+        let leads;
+        if (leadIds && leadIds.length > 0) {
+            const result = await pool.query(
+                `SELECT id, company_name, contact_person, phone
+                 FROM leads
+                 WHERE id = ANY($1) AND status = 'NOVY' AND assigned_to = $2`,
+                [leadIds, activeAgentId]
+            );
+            leads = result.rows;
+        } else {
+            leads = await callOrchestrator.getLeadsForCalling(activeAgentId, maxCalls);
+        }
+
+        if (leads.length === 0) throw new BadRequestError('Žádné leady k volání');
+
+        // ============================================
+        // ROTATING MÓD (24.9.2026)
+        // Sekvenční zpracování, identita (SIP jméno + VLASTNÍ CLIP) se
+        // mění kolo dokola s každým dalším hovorem. Používá
+        // getIdentitiesForLine() — na rozdíl od 'parallel' módu níže,
+        // který zůstává BEZE ZMĚNY a dál používá getActiveSipNames()/
+        // getPhoneNumberForLine().
+        // ============================================
+        if (activeCallMode === 'rotating') {
+            if (activeProvider !== 'odorik') {
+                throw new BadRequestError('Rotující mód je podporován pouze pro provider="odorik"');
+            }
+
+            const identities = odorikService.getIdentitiesForLine(activeOdorikLine);
+            if (identities.length === 0) {
+                throw new BadRequestError(`Žádné identity nejsou k dispozici pro linku '${activeOdorikLine}'`);
+            }
+
+            console.log(`✅ Found ${leads.length} leads to call (ROTATING, ${identities.length} identit, provider=odorik, linka=${activeOdorikLine}, engine=${activeEngine})`);
+
+            setImmediate(async () => {
+                console.log(`🔄 Starting rotating mode: ${identities.length} identit, ${leads.length} leadů...`);
+
+                for (let i = 0; i < leads.length; i++) {
+                    const lead = leads[i];
+                    const identity = identities[i % identities.length];
+
+                    try {
+                        console.log(`📞 [Rotating ${i + 1}/${leads.length}] Calling ${lead.id} (${lead.phone}) via ${identity.sipName} (${identity.fromNumber})...`);
+                        await callOrchestrator.processLead(
+                            lead.id, activeAgentId, activeEngine, activeProvider,
+                            identity.sipName, activeOdorikLine, identity.fromNumber
+                        );
+                        console.log(`✅ [Rotating] Done: ${lead.id}`);
+                    } catch (error) {
+                        console.error(`❌ [Rotating] Failed: ${lead.id}:`, error);
+                    }
+                }
+
+                console.log('🎉 Rotating mode completed!');
+            });
+
+            res.status(200).json({
+                success: true,
+                message: `Rotující volání spuštěno: ${identities.length} identit, ${leads.length} leadů (provider=odorik, linka=${activeOdorikLine}, engine=${activeEngine})`,
+                queuedLeads: leads.length,
+                aiAgentId: activeAgentId,
+                agentName: agentCheck.rows[0].full_name,
+                callMode: 'rotating',
+                provider: activeProvider,
+                engine: activeEngine,
+                odorikLine: activeOdorikLine,
+                identitiesUsed: identities.map(id => id.sipName),
+            } as StartAICallingResponse & Record<string, any>);
+            return;
+        }
+
+        // ============================================
+        // 'parallel' MÓD — BEZE ZMĚNY oproti dosavadnímu chování
+        // ============================================
         let callerIdentifiers: string[];
 
         if (activeProvider === 'odorik') {
@@ -100,21 +192,6 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
         }
 
         console.log(`📞 Worker ${activeProvider === 'odorik' ? 'SIP jména' : 'čísla'} (${actualWorkers}):`, callerIdentifiers.slice(0, actualWorkers));
-
-        let leads;
-        if (leadIds && leadIds.length > 0) {
-            const result = await pool.query(
-                `SELECT id, company_name, contact_person, phone
-                 FROM leads
-                 WHERE id = ANY($1) AND status = 'NOVY' AND assigned_to = $2`,
-                [leadIds, activeAgentId]
-            );
-            leads = result.rows;
-        } else {
-            leads = await callOrchestrator.getLeadsForCalling(activeAgentId, maxCalls);
-        }
-
-        if (leads.length === 0) throw new BadRequestError('Žádné leady k volání');
 
         console.log(`✅ Found ${leads.length} leads to call (${actualWorkers} workers, provider=${activeProvider}, engine=${activeEngine})`);
 
@@ -164,6 +241,7 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
             provider: activeProvider,
             engine: activeEngine,
             odorikLine: activeProvider === 'odorik' ? activeOdorikLine : undefined,
+            callMode: 'parallel',
             workerIdentifiers: callerIdentifiers.slice(0, actualWorkers),
             leadsPerWorker: workerLeads.map((chunk, i) => ({
                 worker: i + 1,
@@ -390,8 +468,8 @@ export const handleRecordingCallback = async (req: Request, res: Response, _next
 // Beze změny chování — historicky NEVOLÁ odorikService.setForward()
 // a nestaví sip: URI destinaci — jen dial lead.phone přímo s "from"
 // nastaveným na ODORIK_PHONE_NUMBER (mobilní linka). Pro test i
-// setForward kroku nebo pevné linky použij /start s
-// provider='odorik' a odorikLine dle potřeby.
+// setForward kroku nebo jiné linky použij /start s
+// provider='odorik' a odorikLine/callMode dle potřeby.
 // ============================================
 export const startOdorikTestCall = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -451,10 +529,10 @@ export const startOdorikTestCall = async (req: Request, res: Response, next: Nex
 // ============================================
 // GET /api/ai-calls/odorik-config
 //
-// ⚠️ ZMĚNA — rozšířeno na OBĚ linky (mobilní 790766, pevná 793305).
-// Response tvar {lines: {mobilni: {...}, pevna: {...}}}, ne plochý
-// jako dřív — frontend (api.ts, Calling.tsx) je aktualizovaný na tenhle
-// tvar zároveň.
+// Přidána 'fb' skupina (24.9.2026). Na rozdíl od mobilni/pevna
+// (jeden sdílený phoneNumber + pole sipNames) vrací fb celé pole
+// identit (sipName + vlastní fromNumber pro každou), protože každá
+// FB linka má jiné CLIP.
 // ============================================
 export const getOdorikConfig = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {

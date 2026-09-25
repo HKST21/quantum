@@ -33,6 +33,12 @@ export interface StartAICallingRequest {
     odorikLine?: OdorikLine;   // ← NOVÉ
 }
 
+// ⚠️ NOVÉ (24.9.2026) — 'parallel' = dnešní chování (N workerů běží
+// souběžně, každý napevno spárovaný s 1 SIP jménem). 'rotating' =
+// sekvenční zpracování, identita (SIP jméno + CLIP) se mění kolo
+// dokola s každým dalším hovorem — anti-spam pro FB linky.
+export type CallMode = 'parallel' | 'rotating';
+
 export interface ConversationOutcome {
     outcome:
         | 'interested'
@@ -86,6 +92,7 @@ export interface StartAICallingRequest {
     workers?: number;
     provider?: CallProvider;   // NOVÉ — default 'twilio'
     engine?: CallEngine;       // NOVÉ — default 'openai'
+    callMode?: CallMode;   // ← NOVÉ
 }
 
 export interface StartAICallingResponse {

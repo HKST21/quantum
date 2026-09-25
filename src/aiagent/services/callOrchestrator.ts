@@ -46,11 +46,19 @@ export class CallOrchestrator {
      * @param engine - 'openai' | 'gemini' (default: 'openai')
      * @param provider - 'twilio' | 'odorik' (default: 'twilio')
      * @param fromNumberOrSipName - pro provider='twilio': AI_PHONE_X
-     *   přidělené workerovi. Pro provider='odorik': SIP jméno (z dané
-     *   linky) přidělené workerovi.
-     * @param odorikLine - ⚠️ NOVÉ — 'mobilni' (790766, default) nebo
-     *   'pevna' (793305). Relevantní jen když provider='odorik' —
-     *   určuje, jaké "from" CLIP číslo se použije.
+     *   přidělené workerovi. Pro provider='odorik': SIP jméno přidělené
+     *   workerovi/identitě.
+     * @param odorikLine - 'mobilni' (790766, default) | 'pevna' (793305)
+     *   | 'fb' (7 linek). Relevantní jen když provider='odorik' —
+     *   určuje, jaké "from" CLIP se použije, POKUD není zadané
+     *   explicitFromNumber (viz níže).
+     * @param explicitFromNumber - ⚠️ NOVÉ (24.9.2026). Pokud je zadané,
+     *   PŘEBÍJÍ odvození CLIP z odorikLine — použije se přesně tahle
+     *   hodnota jako Twilio "from". Určeno pro FB/rotující mód, kde
+     *   každá identita (SIP jméno) má VLASTNÍ CLIP, ne sdílené jedno
+     *   pro celou skupinu. Když NENÍ zadané (mobilní/pevná linka,
+     *   parallel mód, beze změny), chování je identické jako dosud —
+     *   CLIP se odvodí z odorikLine přes getPhoneNumberForLine().
      */
     async processLead(
         leadId: string,
@@ -58,7 +66,8 @@ export class CallOrchestrator {
         engine: CallEngine = 'openai',
         provider: CallProvider = 'twilio',
         fromNumberOrSipName?: string,
-        odorikLine: OdorikLine = 'mobilni'
+        odorikLine: OdorikLine = 'mobilni',
+        explicitFromNumber?: string
     ): Promise<void> {
         let callSid: string | null = null;
         const isGeminiEngine = engine === 'gemini';
@@ -66,7 +75,7 @@ export class CallOrchestrator {
         let sipNameUsed: string | null = null;
 
         try {
-            console.log(`🎯 Processing lead: ${leadId} (agent: ${agentUserId}, engine: ${engine}, provider: ${provider}${isOdorikProvider ? `, linka: ${odorikLine}` : ''}${fromNumberOrSipName ? `, from/sip: ${fromNumberOrSipName}` : ''})`);
+            console.log(`🎯 Processing lead: ${leadId} (agent: ${agentUserId}, engine: ${engine}, provider: ${provider}${isOdorikProvider ? `, linka: ${odorikLine}` : ''}${fromNumberOrSipName ? `, from/sip: ${fromNumberOrSipName}` : ''}${explicitFromNumber ? `, explicitFrom: ${explicitFromNumber}` : ''})`);
 
             const leadResult = await pool.query(
                 `SELECT id, company_name, contact_person, phone, email FROM leads WHERE id = $1`,
@@ -104,12 +113,15 @@ export class CallOrchestrator {
                 await this.sleep(ODORIK_PROPAGATION_DELAY_MS);
 
                 destinationForTwilio = `sip:${sipName}@sip.odorik.cz`;
-                // ⚠️ ZMĚNA — dřív natvrdo process.env.ODORIK_PHONE_NUMBER,
-                // teď podle vybrané linky (mobilní/pevná).
-                callerNumber = odorikService.getPhoneNumberForLine(odorikLine);
+
+                // ⚠️ NOVÉ (24.9.2026) — explicitFromNumber má přednost
+                // (FB/rotující mód, kde každá identita má vlastní CLIP).
+                // Když není zadané, beze změny odvoď z odorikLine
+                // (mobilní/pevná, parallel mód).
+                callerNumber = explicitFromNumber || odorikService.getPhoneNumberForLine(odorikLine);
 
                 if (!callerNumber) {
-                    throw new Error(`Odorik CLIP číslo pro linku '${odorikLine}' není nakonfigurováno v ENV`);
+                    throw new Error(`Odorik CLIP číslo není k dispozici (odorikLine=${odorikLine}, explicitFromNumber=${explicitFromNumber || 'nezadáno'})`);
                 }
             } else {
                 destinationForTwilio = lead.phone;
