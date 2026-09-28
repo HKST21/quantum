@@ -11,6 +11,12 @@ const AGENTS = [
     { id: 'f4adb349-70c3-4e63-8670-81f6c177f61d', name: 'Eva V4', description: 'Nezávazné porovnání' },
     { id: 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9', name: 'Eva V5', description: 'Dvoustupňová kvalifikace' },
     { id: 'dab796fa-bf16-4f99-812c-601a031049ce', name: 'Eva Gemini V2', description: 'Zjednodušený VIP ceník (Gemini)' },
+    // ⚠️ NOVÉ (25.9.2026) — FB agenti chyběli, protože tohle pole
+    // vzniklo dřív, než jsme je vytvořili.
+    { id: '99142508-1483-4ea2-ba9f-c35a9ecdc69f', name: 'Eva FB V6', description: 'FB leady — telefon za 1 Kč (kolega)' },
+    { id: '773db522-8df4-4903-9b4f-019b8b0969b5', name: 'Eva FB V7', description: 'FB leady — telefon za 1 Kč (poradce)' },
+    { id: 'a2a7c4f6-1b90-4b64-8899-451dca563c96', name: 'Eva FB V8', description: 'FB leady — telefon za 1 Kč (expert)' },
+    { id: '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d', name: 'Eva FB V9', description: 'FB leady — telefon za 1 Kč (info)' },
 ];
 
 const STATUS_LABELS: Record<string, { label: string; badge: string }> = {
