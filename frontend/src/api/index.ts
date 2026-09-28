@@ -111,23 +111,43 @@ export interface Agent {
     id: string; fullName: string; email: string;
 }
 
-// ⚠️ ZMĚNA — tvar odpovídá novému backend response {lines: {mobilni, pevna}}
+// ⚠️ NOVÉ (25.9.2026) — jedna FB identita = SIP jméno + VLASTNÍ CLIP.
+// Na rozdíl od mobilni/pevna (sdílené phoneNumber pro celou skupinu),
+// fb skupina má u KAŽDÉ identity jiné CLIP.
+export interface OdorikIdentity {
+    sipName: string;
+    fromNumber: string;
+}
+
 export interface OdorikLineConfig {
     sipNames: string[];
     maxWorkers: number;
     phoneNumber: string | null;
 }
 
+// ⚠️ NOVÉ — tvar pro 'fb' skupinu je JINÝ než OdorikLineConfig (pole
+// identit místo sipNames+phoneNumber).
+export interface OdorikFbLineConfig {
+    identities: OdorikIdentity[];
+    maxWorkers: number;
+}
+
 export interface OdorikConfig {
     lines: {
         mobilni: OdorikLineConfig;
         pevna: OdorikLineConfig;
+        fb: OdorikFbLineConfig;
     };
 }
 
 export type CallProvider = 'twilio' | 'odorik';
 export type CallEngine = 'openai' | 'gemini';
-export type OdorikLine = 'mobilni' | 'pevna';
+export type OdorikLine = 'mobilni' | 'pevna' | 'fb';
+
+// ⚠️ NOVÉ (25.9.2026) — 'parallel' = dosavadní chování (N workerů
+// souběžně). 'rotating' = sekvenční, identita se mění kolo dokola —
+// zatím jen pro 'fb' linku (anti-spam).
+export type CallMode = 'parallel' | 'rotating';
 
 export const getBatchStatus = (agentUserId?: string): Promise<BatchStatus> => {
     const query = agentUserId ? `?agentUserId=${agentUserId}` : '';
@@ -168,11 +188,12 @@ export const startAICalling = (
     workers: number = 1,
     provider: CallProvider = 'twilio',
     engine: CallEngine = 'openai',
-    odorikLine: OdorikLine = 'mobilni'
+    odorikLine: OdorikLine = 'mobilni',
+    callMode: CallMode = 'parallel'
 ): Promise<any> =>
     fetchJson('/ai-calls/start', {
         method: 'POST',
-        body: JSON.stringify({ maxCalls, agentUserId, workers, provider, engine, odorikLine }),
+        body: JSON.stringify({ maxCalls, agentUserId, workers, provider, engine, odorikLine, callMode }),
     });
 
 export const getAgents = (): Promise<{ users: Agent[] }> =>

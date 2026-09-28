@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
     getBatchStatus, getTwilioNumber, getAvgDuration, getOdorikConfig,
-    startAICalling, BatchStatus, AvgDuration, OdorikConfig, CallProvider, CallEngine, OdorikLine,
+    startAICalling, BatchStatus, AvgDuration, OdorikConfig, CallProvider, CallEngine, OdorikLine, CallMode,
 } from '../api';
 
 type CallingStep = 'setup' | 'reauth' | 'calling' | 'done';
@@ -15,6 +15,10 @@ interface AgentOption {
     secondQuestion?: string;
     successLine: string;
     engines: CallEngine[];
+    // ⚠️ NOVÉ (25.9.2026) — true jen pro FB_V6–V9. Vybrání takového
+    // agenta v UI natvrdo uzamkne provider='odorik', odorikLine='fb',
+    // callMode='rotating' a skryje ostatní volby (viz useEffect níže).
+    isFacebookAgent?: boolean;
 }
 
 const AGENTS: AgentOption[] = [
@@ -68,6 +72,46 @@ const AGENTS: AgentOption[] = [
         successLine: 'Děkuji za odpověď! Kolega se ozve v krátkém hovoru a připraví Vám ceník na míru. Hezký den!',
         engines: ['openai', 'gemini'],
     },
+    // ⚠️ NOVÉ (25.9.2026) — FB leady, akce "telefon za 1 Kč", čistě
+    // Gemini. Texty odpovídají aktuálním prompt souborům — pokud se
+    // V6 později upraví (avizováno), pitch/successLine tady přepiš
+    // stejně, ať UI náhled sedí s realitou.
+    {
+        id: '99142508-1483-4ea2-ba9f-c35a9ecdc69f',
+        name: 'Eva FB V6',
+        description: 'FB leady — telefon za 1 Kč (kolega)',
+        pitch: 'Krásný den, volám jako AI z T-Mobile partner. V minulosti jsme měli zájem o mobil za jednu korunu, může Vám nezávazně zavolat kolega s řešením pro vás?',
+        successLine: 'Skvěle! Kolega se Vám v krátkém hovoru ozve s řešením. Hezký den!',
+        engines: ['gemini'],
+        isFacebookAgent: true,
+    },
+    {
+        id: '773db522-8df4-4903-9b4f-019b8b0969b5',
+        name: 'Eva FB V7',
+        description: 'FB leady — telefon za 1 Kč (poradce)',
+        pitch: 'Krásný den, volám jako AI z T-Mobile partner. V minulosti jsme měli zájem o mobil za jednu korunu a teď máte poslední možnost tuto akci využít. Může Vám nezávazně zavolat náš poradce?',
+        successLine: 'Skvěle! Náš poradce se Vám brzy ozve. Hezký den!',
+        engines: ['gemini'],
+        isFacebookAgent: true,
+    },
+    {
+        id: 'a2a7c4f6-1b90-4b64-8899-451dca563c96',
+        name: 'Eva FB V8',
+        description: 'FB leady — telefon za 1 Kč (expert)',
+        pitch: 'Krásný den, volám jako AI z T-Mobile partner. Dříve jste měli zájem o telefon za jednu korunu a teď máte poslední možnost tuto akci využít. Může Vám nezávazně zavolat náš expert?',
+        successLine: 'Skvěle! Náš expert se Vám brzy ozve. Hezký den!',
+        engines: ['gemini'],
+        isFacebookAgent: true,
+    },
+    {
+        id: '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d',
+        name: 'Eva FB V9',
+        description: 'FB leady — telefon za 1 Kč (info)',
+        pitch: 'Krásný den, volám jako AI z T-Mobile partner. Poslední šance telefonů za jednu korunu, chcete od nás nezávazně více informací?',
+        successLine: 'Skvěle! Brzy Vám poskytneme více informací. Hezký den!',
+        engines: ['gemini'],
+        isFacebookAgent: true,
+    },
 ];
 
 const GEMINI_DEFAULT_AGENT_ID = 'dab796fa-bf16-4f99-812c-601a031049ce'; // Eva Gemini V2
@@ -86,29 +130,17 @@ const ENGINE_LABELS: Record<CallEngine, { label: string; icon: string }> = {
     gemini: { label: 'Gemini', icon: '✨' },
 };
 
-const ODORIK_LINE_LABELS: Record<OdorikLine, { label: string; icon: string; lineNumber: string }> = {
-    mobilni: { label: 'Mobilní (790766)', icon: '📱', lineNumber: '790766' },
-    pevna: { label: 'Pevná (793305)', icon: '☎️', lineNumber: '793305' },
+const ODORIK_LINE_LABELS: Record<OdorikLine, { label: string; icon: string }> = {
+    mobilni: { label: 'Mobilní (790766)', icon: '📱' },
+    pevna: { label: 'Pevná (793305)', icon: '☎️' },
+    fb: { label: 'Facebook (7 linek)', icon: '📘' },
 };
 
-// ⚠️ NATVRDO — skutečné CLIP číslo, které zákazník vidí na displeji.
-// LIŠÍ SE od hodnoty vrácené backendem v odorikConfig.lines[X].phoneNumber
-// (to je jen technické Twilio "from" číslo pro navázání BYOC hovoru —
-// Odorik samo přepíše zobrazené CLIP podle toho, ke které lince patří
-// použité SIP jméno, viz handoff dokument sekce 3, citace Petra Soukupa
-// "tím se převezme id volající linky"). U mobilní linky (790766) je
-// zobrazené CLIP (703614594) JINÉ číslo než Twilio from (266266095) —
-// u pevné linky (793305) jsou obě hodnoty stejné (217217749).
-//
-// TODO (budoucí úklid): tohle by mělo jít časem přesunout do ENV
-// (ODORIK_DISPLAY_CLIP_MOBILNI / ODORIK_DISPLAY_CLIP_PEVNA) a
-// backend by je měl vracet přes getOdorikConfig() — spolu s tím by
-// stálo za to přesunout do ENV/DB i všechna ostatní Odorik čísla,
-// která jsou dnes natvrdo v kódu (SIP jména, veřejná čísla apod.),
-// ať se při jakékoli změně na Odorik straně (jako se to stalo u
-// mobilní linky, proto vůbec vznikla pevná linka) nemusí upravovat
-// zdrojový kód, jen ENV proměnné.
-const ODORIK_LINE_DISPLAY_CLIP: Record<OdorikLine, string> = {
+// ⚠️ NATVRDO (18.8.2026, viz starší komentář) — skutečné CLIP pro
+// mobilní/pevnou linku. TODO: přesunout do ENV. FB skupina tohle
+// NEPOTŘEBUJE — její CLIP hodnoty se čtou dynamicky z
+// odorikConfig.lines.fb.identities (backend je zná přesně).
+const ODORIK_LINE_DISPLAY_CLIP: Record<'mobilni' | 'pevna', string> = {
     mobilni: '703614594',
     pevna: '217217749',
 };
@@ -118,6 +150,7 @@ const Calling: React.FC = () => {
     const [provider, setProvider] = useState<CallProvider>('twilio');
     const [engine, setEngine] = useState<CallEngine>('openai');
     const [odorikLine, setOdorikLine] = useState<OdorikLine>('mobilni');
+    const [callMode, setCallMode] = useState<CallMode>('parallel'); // ← NOVÉ
     const [selectedAgent, setSelectedAgent] = useState<AgentOption>(AGENTS[0]);
     const [maxCalls, setMaxCalls] = useState<number>(100);
     const [workers, setWorkers] = useState<number>(1);
@@ -136,6 +169,7 @@ const Calling: React.FC = () => {
     const pollRef = useRef<NodeJS.Timeout | null>(null);
 
     const availableAgents = AGENTS.filter(a => a.engines.includes(engine));
+    const isFbSelected = selectedAgent.isFacebookAgent === true; // ← NOVÉ
 
     const handleEngineChange = (newEngine: CallEngine) => {
         setEngine(newEngine);
@@ -154,6 +188,25 @@ const Calling: React.FC = () => {
         }
     };
 
+    // ⚠️ NOVÉ (25.9.2026) — UI ZÁMEK. Vybrání FB agenta natvrdo
+    // uzamkne provider/odorikLine/callMode na jediné bezpečné
+    // kombinace pro FB linky (žádné riziko, že se FB lead zavolá přes
+    // standardní linku se zpětným voláním na jiného salesmana, nebo
+    // naopak). Při přepnutí PRYČ od FB agenta se hodnoty vrátí na
+    // bezpečné výchozí (mobilní/parallel), ať nezůstane uživatel
+    // "zaseknutý" v FB konfiguraci s jiným agentem.
+    useEffect(() => {
+        if (isFbSelected) {
+            setProvider('odorik');
+            setOdorikLine('fb');
+            setCallMode('rotating');
+        } else if (odorikLine === 'fb') {
+            setOdorikLine('mobilni');
+            setCallMode('parallel');
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedAgent]);
+
     useEffect(() => {
         const loadOdorikConfig = async () => {
             try {
@@ -165,6 +218,7 @@ const Calling: React.FC = () => {
                     lines: {
                         mobilni: { sipNames: [], maxWorkers: 0, phoneNumber: null },
                         pevna: { sipNames: [], maxWorkers: 0, phoneNumber: null },
+                        fb: { identities: [], maxWorkers: 0 },
                     },
                 });
             }
@@ -172,23 +226,31 @@ const Calling: React.FC = () => {
         loadOdorikConfig();
     }, []);
 
-    const activeOdorikLineConfig = odorikConfig?.lines?.[odorikLine];
+    // Standardní linky (mobilní/pevná) — beze změny oproti dřívějšku.
+    const standardOdorikLineConfig = (odorikLine === 'mobilni' || odorikLine === 'pevna')
+        ? odorikConfig?.lines?.[odorikLine]
+        : undefined;
+
+    // ⚠️ NOVÉ — FB konfigurace, jiný tvar (identities, ne sipNames+phoneNumber)
+    const fbConfig = odorikConfig?.lines?.fb;
+    const fbIdentityCount = fbConfig?.identities?.length ?? 0;
+    const fbUnavailable = isFbSelected && odorikConfig !== null && fbIdentityCount === 0;
 
     const maxWorkersAvailable = provider === 'twilio'
         ? TWILIO_MAX_WORKERS
-        : (activeOdorikLineConfig?.maxWorkers ?? 0);
+        : (standardOdorikLineConfig?.maxWorkers ?? 0);
 
     const workerLabels: string[] = provider === 'twilio'
         ? TWILIO_WORKER_PHONES
-        : (activeOdorikLineConfig?.sipNames ?? []);
+        : (standardOdorikLineConfig?.sipNames ?? []);
 
-    const odorikUnavailable = provider === 'odorik' && odorikConfig !== null && maxWorkersAvailable === 0;
+    const odorikUnavailable = provider === 'odorik' && !isFbSelected && odorikConfig !== null && maxWorkersAvailable === 0;
 
     useEffect(() => {
-        if (maxWorkersAvailable > 0 && workers > maxWorkersAvailable) {
+        if (!isFbSelected && maxWorkersAvailable > 0 && workers > maxWorkersAvailable) {
             setWorkers(maxWorkersAvailable);
         }
-    }, [maxWorkersAvailable, workers]);
+    }, [maxWorkersAvailable, workers, isFbSelected]);
 
     const loadMeta = useCallback(async (agentId: string) => {
         setLoadingMeta(true);
@@ -245,7 +307,8 @@ const Calling: React.FC = () => {
 
     const remainingTime = (): string => {
         if (!batchStatus || !avgDuration) return '—';
-        const callsPerWorker = Math.ceil(batchStatus.queueSize / workers);
+        const effectiveWorkers = isFbSelected ? 1 : workers; // rotující = sekvenční, efektivně 1
+        const callsPerWorker = Math.ceil(batchStatus.queueSize / effectiveWorkers);
         const totalSeconds = callsPerWorker * avgDuration.totalPerCall;
         const hours = Math.floor(totalSeconds / 3600);
         const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -292,7 +355,7 @@ const Calling: React.FC = () => {
                 return;
             }
 
-            await startAICalling(maxCalls, selectedAgent.id, workers, provider, engine, odorikLine);
+            await startAICalling(maxCalls, selectedAgent.id, workers, provider, engine, odorikLine, callMode);
 
             const status = await getBatchStatus(selectedAgent.id);
             setBatchStatus(status);
@@ -357,7 +420,7 @@ const Calling: React.FC = () => {
                                 </div>
                                 {engine === 'gemini' && (
                                     <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
-                                        ℹ️ Gemini je dostupné pro Eva V1, Eva Gemini V2 a Eva V5.
+                                        ℹ️ Gemini je dostupné pro Eva V1, Eva Gemini V2, Eva V5 a FB skripty V6–V9.
                                     </div>
                                 )}
                             </div>
@@ -372,6 +435,19 @@ const Calling: React.FC = () => {
                                     ))}
                                 </select>
                             </div>
+
+                            {/* ⚠️ NOVÉ — jasný vizuální indikátor FB módu, ať je hned
+                                vidět, že se aplikují jiná pravidla než u standardních
+                                agentů. */}
+                            {isFbSelected && (
+                                <div className="alert alert-info mb-16" style={{ borderColor: '#7c3aed' }}>
+                                    <div>
+                                        📘 <strong>Facebook leady</strong> — tenhle agent volá VÝHRADNĚ přes dedikovaných
+                                        7 Odorik linek v rotujícím módu. Poskytovatel a linka jsou uzamčené, výběr
+                                        Twilia/mobilní/pevné linky je pro tenhle agent skrytý.
+                                    </div>
+                                </div>
+                            )}
 
                             <div style={{ background: '#f8faff', border: '1px solid #c7d7f9', borderRadius: 'var(--radius)', padding: '12px 14px', marginBottom: 16 }}>
                                 <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>
@@ -398,32 +474,41 @@ const Calling: React.FC = () => {
                                 </div>
                             </div>
 
-                            <div className="form-group">
-                                <label className="form-label">Poskytovatel volání</label>
-                                <div style={{ display: 'flex', gap: 8 }}>
-                                    <button
-                                        type="button"
-                                        className={`btn ${provider === 'twilio' ? 'btn-primary' : 'btn-outline'}`}
-                                        onClick={() => setProvider('twilio')}
-                                    >
-                                        ☎️ Twilio (pevná linka)
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className={`btn ${provider === 'odorik' ? 'btn-primary' : 'btn-outline'}`}
-                                        onClick={() => setProvider('odorik')}
-                                    >
-                                        📱 Odorik (mobilní)
-                                    </button>
+                            {/* ⚠️ ZMĚNA — Provider přepínač se pro FB agenty SKRYJE
+                                úplně (natvrdo odorik, viz useEffect zámek výše). */}
+                            {!isFbSelected && (
+                                <div className="form-group">
+                                    <label className="form-label">Poskytovatel volání</label>
+                                    <div style={{ display: 'flex', gap: 8 }}>
+                                        <button
+                                            type="button"
+                                            className={`btn ${provider === 'twilio' ? 'btn-primary' : 'btn-outline'}`}
+                                            onClick={() => setProvider('twilio')}
+                                        >
+                                            ☎️ Twilio (pevná linka)
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className={`btn ${provider === 'odorik' ? 'btn-primary' : 'btn-outline'}`}
+                                            onClick={() => setProvider('odorik')}
+                                        >
+                                            📱 Odorik (mobilní)
+                                        </button>
+                                    </div>
                                 </div>
-                            </div>
+                            )}
 
-                            {provider === 'odorik' && (
+                            {/* ⚠️ ZMĚNA — Odorik linka přepínač: pro standardní agenty
+                                nabízí jen mobilní/pevnou (fb schválně vynechána — ta se
+                                vybírá výhradně přes FB agenty, ne ručně). Pro FB agenty
+                                se celý tenhle blok nezobrazuje (nahrazen FB info blokem
+                                níže). */}
+                            {!isFbSelected && provider === 'odorik' && (
                                 <div className="form-group">
                                     <label className="form-label">Odorik linka</label>
                                     <div style={{ display: 'flex', gap: 8 }}>
-                                        {(Object.keys(ODORIK_LINE_LABELS) as OdorikLine[]).map((line) => {
-                                            const lineConfig = odorikConfig?.lines?.[line];
+                                        {(['mobilni', 'pevna'] as OdorikLine[]).map((line) => {
+                                            const lineConfig = odorikConfig?.lines?.[line as 'mobilni' | 'pevna'];
                                             const lineUnavailable = odorikConfig !== null && (lineConfig?.maxWorkers ?? 0) === 0;
                                             return (
                                                 <button
@@ -439,9 +524,11 @@ const Calling: React.FC = () => {
                                             );
                                         })}
                                     </div>
-                                    <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
-                                        Zákazník uvidí na displeji: <span style={{ fontFamily: 'monospace', color: 'var(--primary)', fontWeight: 700 }}>{ODORIK_LINE_DISPLAY_CLIP[odorikLine]}</span>
-                                    </div>
+                                    {(odorikLine === 'mobilni' || odorikLine === 'pevna') && (
+                                        <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
+                                            Zákazník uvidí na displeji: <span style={{ fontFamily: 'monospace', color: 'var(--primary)', fontWeight: 700 }}>{ODORIK_LINE_DISPLAY_CLIP[odorikLine]}</span>
+                                        </div>
+                                    )}
                                     {odorikUnavailable && (
                                         <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 6 }}>
                                             ⚠️ Vybraná Odorik linka momentálně nedostupná — žádné SIP jméno není schváleno.
@@ -453,33 +540,73 @@ const Calling: React.FC = () => {
                                 </div>
                             )}
 
-                            <div className="form-group">
-                                <label className="form-label">
-                                    Počet workerů (paralelní volání)
-                                    <span style={{ fontWeight: 400, color: 'var(--gray-400)', marginLeft: 8, fontSize: 12 }}>max {maxWorkersAvailable}</span>
-                                </label>
-                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                                    {Array.from({ length: maxWorkersAvailable }, (_, i) => i + 1).map(n => (
-                                        <button key={n} type="button" className={`btn ${workers === n ? 'btn-primary' : 'btn-outline'}`} style={{ minWidth: 44 }} onClick={() => setWorkers(n)}>
-                                            {n}
-                                        </button>
-                                    ))}
-                                    {maxWorkersAvailable === 0 && (
-                                        <span style={{ fontSize: 13, color: 'var(--gray-400)', alignSelf: 'center' }}>
-                                            {provider === 'odorik' ? 'Načítám Odorik konfiguraci...' : '—'}
-                                        </span>
+                            {/* ⚠️ NOVÉ — FB info blok, nahrazuje Provider+Linka pro FB
+                                agenty. Ukazuje rotující mód + reálná čísla, co se budou
+                                střídat (natažená dynamicky z backendu, ne natvrdo). */}
+                            {isFbSelected && (
+                                <div className="form-group">
+                                    <label className="form-label">Volací mód</label>
+                                    <div style={{
+                                        display: 'inline-flex', alignItems: 'center', gap: 8,
+                                        padding: '6px 14px', borderRadius: 20, fontSize: 13, fontWeight: 600,
+                                        background: '#ede9fe', color: '#6d28d9', border: '1px solid #c4b5fd',
+                                    }}>
+                                        🔄 Rotující — {fbIdentityCount || '…'} linek se střídá
+                                    </div>
+                                    <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 8 }}>
+                                        Žádná paralelita — hovory jdou striktně jeden po druhém, s 10–18s pauzou
+                                        mezi nimi, a identita (SIP jméno + CLIP) se mění kolo dokola s každým dalším
+                                        hovorem. Cíl: rozprostřít zátěž přes všech {fbIdentityCount || 'N'} linek, ne
+                                        koncentrovat ji na jednu.
+                                    </div>
+                                    {fbConfig && fbConfig.identities.length > 0 && (
+                                        <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 8 }}>
+                                            Rotující čísla ({fbConfig.identities.length}): <span style={{ fontFamily: 'monospace' }}>
+                                                {fbConfig.identities.map(i => i.fromNumber.replace('+420', '')).join(', ')}
+                                            </span>
+                                        </div>
+                                    )}
+                                    {fbUnavailable && (
+                                        <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 8 }}>
+                                            ⚠️ Žádná FB identita momentálně není dostupná — zkontroluj ENV proměnné ODORIK_FB_SIP_NAME_X / ODORIK_FB_CLIP_X.
+                                        </div>
                                     )}
                                 </div>
-                                {workerLabels.length > 0 && (
-                                    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--gray-500)' }}>
-                                        {workerLabels.slice(0, workers).map((label, i) => (
-                                            <span key={label} style={{ marginRight: 10, fontFamily: 'monospace', color: 'var(--primary)' }}>W{i + 1}: {label}</span>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
+                            )}
 
-                            {provider === 'twilio' && workers === 1 && (
+                            {/* ⚠️ ZMĚNA — "Počet workerů" sekce dává smysl jen pro
+                                parallel mód (twilio, nebo odorik mobilní/pevná). Pro FB
+                                (rotující, vždy sekvenční) se skrývá úplně — nahrazuje ji
+                                FB info blok výše. */}
+                            {!isFbSelected && (
+                                <div className="form-group">
+                                    <label className="form-label">
+                                        Počet workerů (paralelní volání)
+                                        <span style={{ fontWeight: 400, color: 'var(--gray-400)', marginLeft: 8, fontSize: 12 }}>max {maxWorkersAvailable}</span>
+                                    </label>
+                                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                        {Array.from({ length: maxWorkersAvailable }, (_, i) => i + 1).map(n => (
+                                            <button key={n} type="button" className={`btn ${workers === n ? 'btn-primary' : 'btn-outline'}`} style={{ minWidth: 44 }} onClick={() => setWorkers(n)}>
+                                                {n}
+                                            </button>
+                                        ))}
+                                        {maxWorkersAvailable === 0 && (
+                                            <span style={{ fontSize: 13, color: 'var(--gray-400)', alignSelf: 'center' }}>
+                                                {provider === 'odorik' ? 'Načítám Odorik konfiguraci...' : '—'}
+                                            </span>
+                                        )}
+                                    </div>
+                                    {workerLabels.length > 0 && (
+                                        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--gray-500)' }}>
+                                            {workerLabels.slice(0, workers).map((label, i) => (
+                                                <span key={label} style={{ marginRight: 10, fontFamily: 'monospace', color: 'var(--primary)' }}>W{i + 1}: {label}</span>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {!isFbSelected && provider === 'twilio' && workers === 1 && (
                                 <div className="form-group">
                                     <label className="form-label">Volající číslo</label>
                                     <div style={{ padding: '9px 12px', background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', fontFamily: 'monospace', fontSize: 15, fontWeight: 700, color: 'var(--primary)' }}>
@@ -514,8 +641,9 @@ const Calling: React.FC = () => {
                                 <div className="alert alert-info">
                                     <div>
                                         <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                                            ⏱ Odhadovaný čas: {estimateTime(maxCalls, workers)}
-                                            {workers > 1 && <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 8, color: 'var(--primary)' }}>({workers}× rychleji)</span>}
+                                            ⏱ Odhadovaný čas: {estimateTime(maxCalls, isFbSelected ? 1 : workers)}
+                                            {!isFbSelected && workers > 1 && <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 8, color: 'var(--primary)' }}>({workers}× rychleji)</span>}
+                                            {isFbSelected && <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 8, color: 'var(--gray-500)' }}>(sekvenční, rotující)</span>}
                                         </div>
                                         <div style={{ fontSize: 12 }}>
                                             Průměrný hovor: {formatDuration(avgDuration.avgDuration)} + {avgDuration.overhead}s overhead
@@ -532,7 +660,7 @@ const Calling: React.FC = () => {
                             <button
                                 className="btn btn-primary btn-lg w-full"
                                 onClick={() => setStep('reauth')}
-                                disabled={novyCount === 0 || loadingMeta || odorikUnavailable}
+                                disabled={novyCount === 0 || loadingMeta || odorikUnavailable || fbUnavailable}
                             >
                                 Pokračovat k ověření →
                             </button>
@@ -548,17 +676,28 @@ const Calling: React.FC = () => {
                         <div className="card-body">
                             <div className="alert alert-warning mb-16">
                                 <div>
-                                    Poskytovatel: <strong>{provider === 'twilio' ? '☎️ Twilio (pevná linka)' : `📱 Odorik (${ODORIK_LINE_LABELS[odorikLine].label})`}</strong><br />
-                                    {provider === 'odorik' && (
+                                    {isFbSelected ? (
                                         <>
-                                            Zákazník uvidí: <strong style={{ fontFamily: 'monospace' }}>{ODORIK_LINE_DISPLAY_CLIP[odorikLine]}</strong><br />
+                                            Poskytovatel: <strong>📘 Odorik — Facebook (7 linek, rotující)</strong><br />
+                                            Volací mód: <strong>🔄 Rotující</strong> ({fbIdentityCount} identit se střídá)<br />
+                                        </>
+                                    ) : (
+                                        <>
+                                            Poskytovatel: <strong>{provider === 'twilio' ? '☎️ Twilio (pevná linka)' : `📱 Odorik (${ODORIK_LINE_LABELS[odorikLine].label})`}</strong><br />
+                                            {provider === 'odorik' && (odorikLine === 'mobilni' || odorikLine === 'pevna') && (
+                                                <>
+                                                    Zákazník uvidí: <strong style={{ fontFamily: 'monospace' }}>{ODORIK_LINE_DISPLAY_CLIP[odorikLine]}</strong><br />
+                                                </>
+                                            )}
                                         </>
                                     )}
                                     Engine: <strong>{ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label}</strong><br />
                                     Agent: <strong>{selectedAgent.name}</strong> — {selectedAgent.description}<br />
                                     Počet hovorů: <strong>{maxCalls.toLocaleString('cs-CZ')}</strong><br />
-                                    Workeři: <strong>{workers}×</strong> <span style={{ fontFamily: 'monospace', fontSize: 12 }}>({workerLabels.slice(0, workers).join(', ')})</span><br />
-                                    Odhadovaný čas: <strong>{estimateTime(maxCalls, workers)}</strong><br /><br />
+                                    {!isFbSelected && (
+                                        <>Workeři: <strong>{workers}×</strong> <span style={{ fontFamily: 'monospace', fontSize: 12 }}>({workerLabels.slice(0, workers).join(', ')})</span><br /></>
+                                    )}
+                                    Odhadovaný čas: <strong>{estimateTime(maxCalls, isFbSelected ? 1 : workers)}</strong><br /><br />
                                     Pro potvrzení zadej své heslo.
                                 </div>
                             </div>
@@ -571,7 +710,7 @@ const Calling: React.FC = () => {
                                 <div style={{ display: 'flex', gap: 10 }}>
                                     <button type="button" className="btn btn-outline" onClick={() => setStep('setup')} disabled={reauthLoading}>← Zpět</button>
                                     <button type="submit" className="btn btn-success btn-lg" style={{ flex: 1 }} disabled={reauthLoading || !password}>
-                                        {reauthLoading ? <><span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Spouštím...</> : `🚀 Spustit ${selectedAgent.name} (${workers} worker${workers > 1 ? 'y' : ''})`}
+                                        {reauthLoading ? <><span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Spouštím...</> : `🚀 Spustit ${selectedAgent.name}${!isFbSelected ? ` (${workers} worker${workers > 1 ? 'y' : ''})` : ''}`}
                                     </button>
                                 </div>
                             </form>
@@ -583,7 +722,7 @@ const Calling: React.FC = () => {
             {step === 'calling' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div style={{ background: 'var(--primary-light)', border: '1px solid #bfdbfe', borderRadius: 'var(--radius)', padding: '8px 14px', fontSize: 13, color: 'var(--primary)', fontWeight: 600, marginBottom: 12 }}>
-                        🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {provider === 'twilio' ? '☎️ Twilio' : `📱 Odorik ${ODORIK_LINE_LABELS[odorikLine].label}`} · {workers} worker{workers > 1 ? 'y' : ''} · „{displayedPitch.slice(0, 55)}..."
+                        🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {isFbSelected ? '📘 FB rotující' : (provider === 'twilio' ? '☎️ Twilio' : `📱 Odorik ${ODORIK_LINE_LABELS[odorikLine].label}`)} · {isFbSelected ? 'sekvenční' : `${workers} worker${workers > 1 ? 'y' : ''}`} · „{displayedPitch.slice(0, 55)}..."
                     </div>
                     <div className="live-feed mb-16">
                         <span className="live-dot" />

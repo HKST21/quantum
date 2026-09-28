@@ -46,6 +46,10 @@ import { twilioToGemini } from './audioConverter';
 import { evaV1GeminiPrompt } from '../prompts/eva_v1_gemini';
 import { evaV2GeminiPrompt } from '../prompts/eva_v2_gemini';
 import { evaV5GeminiPrompt } from '../prompts/eva_v5_gemini';
+import { evaFbV6GeminiPrompt } from '../prompts/eva_fb_v6_gemini';
+import { evaFbV7GeminiPrompt } from '../prompts/eva_fb_v7_gemini';
+import { evaFbV8GeminiPrompt } from '../prompts/eva_fb_v8_gemini';
+import { evaFbV9GeminiPrompt } from '../prompts/eva_fb_v9_gemini';
 
 const GEMINI_MODEL = 'gemini-3.1-flash-live-preview';
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`;
@@ -63,6 +67,10 @@ const GEMINI_AGENT_PROMPTS: Record<string, () => string> = {
     '53c65ca7-68bc-4948-83e5-35a64c17f0fb': evaV1GeminiPrompt,
     'dab796fa-bf16-4f99-812c-601a031049ce': evaV2GeminiPrompt, // Eva Gemini V2
     'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9': evaV5GeminiPrompt,
+    '99142508-1483-4ea2-ba9f-c35a9ecdc69f': evaFbV6GeminiPrompt, // ← NOVÉ
+    '773db522-8df4-4903-9b4f-019b8b0969b5': evaFbV7GeminiPrompt, // ← NOVÉ
+    'a2a7c4f6-1b90-4b64-8899-451dca563c96': evaFbV8GeminiPrompt, // ← NOVÉ
+    '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d': evaFbV9GeminiPrompt, // ← NOVÉ
 };
 
 export interface GeminiOutcome {
