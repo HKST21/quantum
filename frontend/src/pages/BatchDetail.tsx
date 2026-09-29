@@ -10,6 +10,10 @@ const AGENT_NAMES: Record<string, string> = {
     'f4adb349-70c3-4e63-8670-81f6c177f61d': 'Eva V4',
     'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9': 'Eva V5',
     'dab796fa-bf16-4f99-812c-601a031049ce': 'Eva Gemini V2',
+    '99142508-1483-4ea2-ba9f-c35a9ecdc69f': 'Eva FB V6',
+    '773db522-8df4-4903-9b4f-019b8b0969b5': 'Eva FB V7',
+    'a2a7c4f6-1b90-4b64-8899-451dca563c96': 'Eva FB V8',
+    '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d': 'Eva FB V9',
 };
 
 const BatchDetail: React.FC = () => {

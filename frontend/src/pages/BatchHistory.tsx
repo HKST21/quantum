@@ -9,6 +9,12 @@ const AGENT_COLORS: Record<string, string> = {
     'f4adb349-70c3-4e63-8670-81f6c177f61d': '#d97706', // Eva V4 - oranžová
     'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9': '#db2777', // Eva V5 - růžová
     'dab796fa-bf16-4f99-812c-601a031049ce': '#0891b2', // Eva Gemini V2 - tyrkysová
+    // ⚠️ NOVÉ (25.9.2026) — FB agenti, sytější odstíny fialové (téma
+    // Facebooku) ať jsou v tabulce na první pohled odlišitelní.
+    '99142508-1483-4ea2-ba9f-c35a9ecdc69f': '#9333ea', // Eva FB V6
+    '773db522-8df4-4903-9b4f-019b8b0969b5': '#a855f7', // Eva FB V7
+    'a2a7c4f6-1b90-4b64-8899-451dca563c96': '#c026d3', // Eva FB V8
+    '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d': '#d946ef', // Eva FB V9
 };
 
 const BatchHistory: React.FC = () => {
