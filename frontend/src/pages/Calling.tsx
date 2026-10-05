@@ -15,9 +15,6 @@ interface AgentOption {
     secondQuestion?: string;
     successLine: string;
     engines: CallEngine[];
-    // ⚠️ NOVÉ (25.9.2026) — true jen pro FB_V6–V9. Vybrání takového
-    // agenta v UI natvrdo uzamkne provider='odorik', odorikLine='fb',
-    // callMode='rotating' a skryje ostatní volby (viz useEffect níže).
     isFacebookAgent?: boolean;
 }
 
@@ -72,10 +69,6 @@ const AGENTS: AgentOption[] = [
         successLine: 'Děkuji za odpověď! Kolega se ozve v krátkém hovoru a připraví Vám ceník na míru. Hezký den!',
         engines: ['openai', 'gemini'],
     },
-    // ⚠️ NOVÉ (25.9.2026) — FB leady, akce "telefon za 1 Kč", čistě
-    // Gemini. Texty odpovídají aktuálním prompt souborům — pokud se
-    // V6 později upraví (avizováno), pitch/successLine tady přepiš
-    // stejně, ať UI náhled sedí s realitou.
     {
         id: '99142508-1483-4ea2-ba9f-c35a9ecdc69f',
         name: 'Eva FB V6',
@@ -88,9 +81,9 @@ const AGENTS: AgentOption[] = [
     {
         id: '773db522-8df4-4903-9b4f-019b8b0969b5',
         name: 'Eva FB V7',
-        description: 'FB leady — telefon za 1 Kč (poradce)',
-        pitch: 'Krásný den, volám jako AI z T-Mobile partner. V minulosti jsme měli zájem o mobil za jednu korunu a teď máte poslední možnost tuto akci využít. Může Vám nezávazně zavolat náš poradce?',
-        successLine: 'Skvěle! Náš poradce se Vám brzy ozve. Hezký den!',
+        description: 'FB leady — zlevněný tarif + telefon za 1 Kč (info)',
+        pitch: 'Krásný den, volám jako AI z T-Mobile partner. Vaše poptávka na zlevněný tarif a telefon za korunu je stále aktivní, chcete od nás nezávazně více informací?',
+        successLine: 'Ozveme se s informacemi :)',
         engines: ['gemini'],
         isFacebookAgent: true,
     },
@@ -136,10 +129,6 @@ const ODORIK_LINE_LABELS: Record<OdorikLine, { label: string; icon: string }> = 
     fb: { label: 'Facebook (7 linek)', icon: '📘' },
 };
 
-// ⚠️ NATVRDO (18.8.2026, viz starší komentář) — skutečné CLIP pro
-// mobilní/pevnou linku. TODO: přesunout do ENV. FB skupina tohle
-// NEPOTŘEBUJE — její CLIP hodnoty se čtou dynamicky z
-// odorikConfig.lines.fb.identities (backend je zná přesně).
 const ODORIK_LINE_DISPLAY_CLIP: Record<'mobilni' | 'pevna', string> = {
     mobilni: '703614594',
     pevna: '217217749',
@@ -150,7 +139,7 @@ const Calling: React.FC = () => {
     const [provider, setProvider] = useState<CallProvider>('twilio');
     const [engine, setEngine] = useState<CallEngine>('openai');
     const [odorikLine, setOdorikLine] = useState<OdorikLine>('mobilni');
-    const [callMode, setCallMode] = useState<CallMode>('parallel'); // ← NOVÉ
+    const [callMode, setCallMode] = useState<CallMode>('parallel');
     const [selectedAgent, setSelectedAgent] = useState<AgentOption>(AGENTS[0]);
     const [maxCalls, setMaxCalls] = useState<number>(100);
     const [workers, setWorkers] = useState<number>(1);
@@ -169,7 +158,7 @@ const Calling: React.FC = () => {
     const pollRef = useRef<NodeJS.Timeout | null>(null);
 
     const availableAgents = AGENTS.filter(a => a.engines.includes(engine));
-    const isFbSelected = selectedAgent.isFacebookAgent === true; // ← NOVÉ
+    const isFbSelected = selectedAgent.isFacebookAgent === true;
 
     const handleEngineChange = (newEngine: CallEngine) => {
         setEngine(newEngine);
@@ -188,13 +177,6 @@ const Calling: React.FC = () => {
         }
     };
 
-    // ⚠️ NOVÉ (25.9.2026) — UI ZÁMEK. Vybrání FB agenta natvrdo
-    // uzamkne provider/odorikLine/callMode na jediné bezpečné
-    // kombinace pro FB linky (žádné riziko, že se FB lead zavolá přes
-    // standardní linku se zpětným voláním na jiného salesmana, nebo
-    // naopak). Při přepnutí PRYČ od FB agenta se hodnoty vrátí na
-    // bezpečné výchozí (mobilní/parallel), ať nezůstane uživatel
-    // "zaseknutý" v FB konfiguraci s jiným agentem.
     useEffect(() => {
         if (isFbSelected) {
             setProvider('odorik');
@@ -226,12 +208,10 @@ const Calling: React.FC = () => {
         loadOdorikConfig();
     }, []);
 
-    // Standardní linky (mobilní/pevná) — beze změny oproti dřívějšku.
     const standardOdorikLineConfig = (odorikLine === 'mobilni' || odorikLine === 'pevna')
         ? odorikConfig?.lines?.[odorikLine]
         : undefined;
 
-    // ⚠️ NOVÉ — FB konfigurace, jiný tvar (identities, ne sipNames+phoneNumber)
     const fbConfig = odorikConfig?.lines?.fb;
     const fbIdentityCount = fbConfig?.identities?.length ?? 0;
     const fbUnavailable = isFbSelected && odorikConfig !== null && fbIdentityCount === 0;
@@ -307,7 +287,7 @@ const Calling: React.FC = () => {
 
     const remainingTime = (): string => {
         if (!batchStatus || !avgDuration) return '—';
-        const effectiveWorkers = isFbSelected ? 1 : workers; // rotující = sekvenční, efektivně 1
+        const effectiveWorkers = isFbSelected ? 1 : workers;
         const callsPerWorker = Math.ceil(batchStatus.queueSize / effectiveWorkers);
         const totalSeconds = callsPerWorker * avgDuration.totalPerCall;
         const hours = Math.floor(totalSeconds / 3600);
@@ -436,9 +416,6 @@ const Calling: React.FC = () => {
                                 </select>
                             </div>
 
-                            {/* ⚠️ NOVÉ — jasný vizuální indikátor FB módu, ať je hned
-                                vidět, že se aplikují jiná pravidla než u standardních
-                                agentů. */}
                             {isFbSelected && (
                                 <div className="alert alert-info mb-16" style={{ borderColor: '#7c3aed' }}>
                                     <div>
@@ -474,8 +451,6 @@ const Calling: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* ⚠️ ZMĚNA — Provider přepínač se pro FB agenty SKRYJE
-                                úplně (natvrdo odorik, viz useEffect zámek výše). */}
                             {!isFbSelected && (
                                 <div className="form-group">
                                     <label className="form-label">Poskytovatel volání</label>
@@ -498,11 +473,6 @@ const Calling: React.FC = () => {
                                 </div>
                             )}
 
-                            {/* ⚠️ ZMĚNA — Odorik linka přepínač: pro standardní agenty
-                                nabízí jen mobilní/pevnou (fb schválně vynechána — ta se
-                                vybírá výhradně přes FB agenty, ne ručně). Pro FB agenty
-                                se celý tenhle blok nezobrazuje (nahrazen FB info blokem
-                                níže). */}
                             {!isFbSelected && provider === 'odorik' && (
                                 <div className="form-group">
                                     <label className="form-label">Odorik linka</label>
@@ -540,9 +510,6 @@ const Calling: React.FC = () => {
                                 </div>
                             )}
 
-                            {/* ⚠️ NOVÉ — FB info blok, nahrazuje Provider+Linka pro FB
-                                agenty. Ukazuje rotující mód + reálná čísla, co se budou
-                                střídat (natažená dynamicky z backendu, ne natvrdo). */}
                             {isFbSelected && (
                                 <div className="form-group">
                                     <label className="form-label">Volací mód</label>
@@ -574,10 +541,6 @@ const Calling: React.FC = () => {
                                 </div>
                             )}
 
-                            {/* ⚠️ ZMĚNA — "Počet workerů" sekce dává smysl jen pro
-                                parallel mód (twilio, nebo odorik mobilní/pevná). Pro FB
-                                (rotující, vždy sekvenční) se skrývá úplně — nahrazuje ji
-                                FB info blok výše. */}
                             {!isFbSelected && (
                                 <div className="form-group">
                                     <label className="form-label">
