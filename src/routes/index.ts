@@ -10,7 +10,7 @@ import batchCallsRoutes from '../aiagent/routes/batchCalls.routes';
 import alertsRoutes from './alerts.routes';
 const router = Router();
 
-// Verze Node.js, která opravdu běží (kontrola po bezpečnostních záplatách, viz Render advisory 23.10.2026)
+// Verze Node.jsS, která opravdu běží (kontrola po bezpečnostních záplatách, viz Render advisory 23.10.2026)
 console.log(`🟢 Node.js runtime: ${process.version}`);
 
 router.use('/auth', authRoutes);
