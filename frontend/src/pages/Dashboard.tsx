@@ -19,6 +19,16 @@ const AGENTS = [
     { id: '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d', name: 'Eva FB V9', description: 'FB leady — telefon za 1 Kč (info)' },
 ];
 
+// Agenti, kteří zůstávají aktivní (od 1. 11. 2026). Ostatní jsou archivní:
+// zůstávají v AGENTS kvůli jménům a historii, ale nelze na ně přeřazovat.
+const ACTIVE_AGENT_IDS = [
+    '53c65ca7-68bc-4948-83e5-35a64c17f0fb', // Eva V1
+    'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9', // Eva V5
+    'dab796fa-bf16-4f99-812c-601a031049ce', // Eva Gemini V2
+    '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d', // Eva FB V9
+];
+const ACTIVE_AGENTS = AGENTS.filter(a => ACTIVE_AGENT_IDS.includes(a.id));
+
 const STATUS_LABELS: Record<string, { label: string; badge: string }> = {
     NOVY: { label: 'Nový', badge: 'badge-primary' },
     CHCE_KONTAKT_AI: { label: 'Chce kontakt', badge: 'badge-success' },
@@ -61,7 +71,7 @@ const Dashboard: React.FC = () => {
     // Panel přeřazení
     const [showReassign, setShowReassign] = useState(false);
     const [reassignFrom, setReassignFrom] = useState(AI_AGENT_ID);
-    const [reassignTo, setReassignTo] = useState('aeec78ff-a86b-4cab-b33a-adeb7c94f08e');
+    const [reassignTo, setReassignTo] = useState('dab796fa-bf16-4f99-812c-601a031049ce');
     const [reassignCount, setReassignCount] = useState(100);
     const [reassigning, setReassigning] = useState(false);
     const [reassignResult, setReassignResult] = useState<string | null>(null);
@@ -250,7 +260,7 @@ const Dashboard: React.FC = () => {
                             <div className="form-group" style={{ margin: 0, minWidth: 200 }}>
                                 <label className="form-label">K agentovi</label>
                                 <select className="form-select" value={reassignTo} onChange={(e) => setReassignTo(e.target.value)}>
-                                    {AGENTS.map(a => <option key={a.id} value={a.id}>{a.name} — {a.description}</option>)}
+                                    {ACTIVE_AGENTS.map(a => <option key={a.id} value={a.id}>{a.name} — {a.description}</option>)}
                                 </select>
                             </div>
                             <div className="form-group" style={{ margin: 0, minWidth: 120 }}>

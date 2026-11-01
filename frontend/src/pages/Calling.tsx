@@ -37,30 +37,6 @@ const AGENTS: AgentOption[] = [
         engines: ['gemini'],
     },
     {
-        id: 'aeec78ff-a86b-4cab-b33a-adeb7c94f08e',
-        name: 'Eva V2',
-        description: 'Neveřejné slevy — specialista',
-        pitch: 'T-Mobile partner s neveřejnými slevami u telefonu, můžu Vám domluvit krátký nezávazný hovor s naším specialistou?',
-        successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
-        engines: ['openai'],
-    },
-    {
-        id: 'e7a469bb-4783-4f96-b961-03dd503e5bfa',
-        name: 'Eva V3',
-        description: 'Neveřejné slevy — kolega z týmu',
-        pitch: 'T-Mobile partner u telefonu, volám kvůli neveřejným slevám. Můžu Vám domluvit krátký hovor s kolegou z našeho týmu?',
-        successLine: 'Super, kolega se ozve hned, jak se k Vám dostane. Hezký den!',
-        engines: ['openai'],
-    },
-    {
-        id: 'f4adb349-70c3-4e63-8670-81f6c177f61d',
-        name: 'Eva V4',
-        description: 'Zjednodušený VIP ceník (krátký pitch)',
-        pitch: 'Krásný den, volám jako AI z T-Mobile partner, můžu vám do SMS poslat naprosto NEZÁVAZNĚ náš VIP ceník?',
-        successLine: 'Skvěle! Kolega se ozve v krátkém hovoru a připraví Vám ho na míru. Hezký den!',
-        engines: ['openai'],
-    },
-    {
         id: 'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9',
         name: 'Eva V5',
         description: 'VIP ceník + počet čísel u operátora',
@@ -68,33 +44,6 @@ const AGENTS: AgentOption[] = [
         secondQuestion: 'Děkuji! Poslední dotaz, jaký počet telefonních čísel máte aktuálně u svého operátora?',
         successLine: 'Děkuji za odpověď! Kolega se ozve v krátkém hovoru a připraví Vám ceník na míru. Hezký den!',
         engines: ['openai', 'gemini'],
-    },
-    {
-        id: '99142508-1483-4ea2-ba9f-c35a9ecdc69f',
-        name: 'Eva FB V6',
-        description: 'FB leady — telefon za 1 Kč (kolega)',
-        pitch: 'Krásný den, volám jako AI z T-Mobile partner. V minulosti jsme měli zájem o mobil za jednu korunu, může Vám nezávazně zavolat kolega s řešením pro vás?',
-        successLine: 'Skvěle! Kolega se Vám v krátkém hovoru ozve s řešením. Hezký den!',
-        engines: ['gemini'],
-        isFacebookAgent: true,
-    },
-    {
-        id: '773db522-8df4-4903-9b4f-019b8b0969b5',
-        name: 'Eva FB V7',
-        description: 'FB leady — zlevněný tarif + telefon za 1 Kč (info)',
-        pitch: 'Krásný den, volám jako AI z T-Mobile partner. Vaše poptávka na zlevněný tarif a telefon za korunu je stále aktivní, chcete od nás nezávazně více informací?',
-        successLine: 'Ozveme se s informacemi :)',
-        engines: ['gemini'],
-        isFacebookAgent: true,
-    },
-    {
-        id: 'a2a7c4f6-1b90-4b64-8899-451dca563c96',
-        name: 'Eva FB V8',
-        description: 'FB leady — telefon za 1 Kč (expert)',
-        pitch: 'Krásný den, volám jako AI z T-Mobile partner. Dříve jste měli zájem o telefon za jednu korunu a teď máte poslední možnost tuto akci využít. Může Vám nezávazně zavolat náš expert?',
-        successLine: 'Skvěle! Náš expert se Vám brzy ozve. Hezký den!',
-        engines: ['gemini'],
-        isFacebookAgent: true,
     },
     {
         id: '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d',
@@ -447,12 +396,12 @@ const Calling: React.FC = () => {
                                 </div>
                                 {engine === 'gemini' && (
                                     <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
-                                        ℹ️ Gemini je dostupné pro Eva V1, Eva Gemini V2, Eva V5 a FB skripty V6–V9.
+                                        ℹ️ Gemini je dostupné pro Eva V1, Eva Gemini V2, Eva V5 a Eva FB V9.
                                     </div>
                                 )}
                                 {isAsterisk && (
                                     <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
-                                        ℹ️ Vlastní ústředna (Asterisk + Odorik) podporuje jen Gemini. FB skripty V6–V9 zatím jedou jen přes Odorik.
+                                        ℹ️ Vlastní ústředna (Asterisk + Odorik) podporuje jen Gemini. Eva FB V9 zatím jede jen přes Odorik.
                                     </div>
                                 )}
                             </div>

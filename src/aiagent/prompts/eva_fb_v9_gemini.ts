@@ -2,7 +2,15 @@
 // EVA FB V9 — GEMINI (Facebook leady, akce "telefon za 1 Kč",
 // varianta "poslední šance" — slibuje INFORMACE, ne zpětný hovor od
 // osoby)
-// Viz eva_fb_v6_gemini.ts pro plný kontext kampaně.
+//
+// ⚠️ KONTEXT KAMPANĚ (původně v eva_fb_v6_gemini.ts, přesunuto sem
+// 1.11.2026, protože FB V6–V8 byly odstraněny): na rozdíl od Eva Gemini
+// V2 (studený kontakt) jsou tohle FB leady, kteří SAMI vyplnili formulář
+// se zájmem o akci. Čistě AKVIZICE od konkurence — cílovka jsou noví
+// zákazníci u O2/Vodafone, NE stávající T-Mobile zákazníci (retence se
+// tu vůbec neřeší). Strukturně vychází z eva_v2_gemini.ts (stejná
+// kostra: spojená FÁZE 1, ZÁKAZNÍK ZAVĚSIL, function calling), ale
+// s pitchem a edge cases šitými na tuhle kampaň (zadání od Hejdy).
 // ============================================
 
 export const evaFbV9GeminiPrompt = (): string => `

@@ -1,17 +1,11 @@
 import WebSocket from 'ws';
 import { ConversationOutcome } from '../types/aiCalls.types';
 import { evaV1Prompt } from '../prompts/eva_v1';
-import { evaV2Prompt } from '../prompts/eva_v2';
-import { evaV3Prompt } from '../prompts/eva_v3';
-import { evaV4Prompt } from '../prompts/eva_v4';
 import { evaV5Prompt } from '../prompts/eva_v5';
 
-// Mapa agentů → prompty
+// Mapa agentů → prompty (od 1.11.2026 jen Eva V1 a V5; V2/V3/V4 odstraněny)
 const AGENT_PROMPTS: Record<string, () => string> = {
     '53c65ca7-68bc-4948-83e5-35a64c17f0fb': evaV1Prompt,
-    'aeec78ff-a86b-4cab-b33a-adeb7c94f08e': evaV2Prompt,
-    'e7a469bb-4783-4f96-b961-03dd503e5bfa': evaV3Prompt,
-    'f4adb349-70c3-4e63-8670-81f6c177f61d': evaV4Prompt,
     'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9': evaV5Prompt,
 };
 

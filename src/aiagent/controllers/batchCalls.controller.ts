@@ -14,6 +14,11 @@ const getAgentId = (req: Request): string =>
 // tak z Historie dávek úplně ztratily, i když se v ai_call_logs
 // normálně zapsaly. Až přibude další agent (další Gemini prompt nebo
 // nová OpenAI verze), přidej jeho UUID sem.
+//
+// ⚠️ 1.11.2026: aktivní agenti jsou jen Eva V1, Eva V5, Eva Gemini V2 a
+// Eva FB V9. UUID zrušených agentů (V2, V3, V4, FB V6, V7, V8) tu ZÁMĚRNĚ
+// ZŮSTÁVAJÍ — jejich historické hovory v ai_call_logs by jinak zmizely z
+// Historie dávek a statistik. Nemazat.
 const AI_AGENT_IDS = [
     '53c65ca7-68bc-4948-83e5-35a64c17f0fb', // Eva V1 (OpenAI)
     'aeec78ff-a86b-4cab-b33a-adeb7c94f08e', // Eva V2 (OpenAI)
