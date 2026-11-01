@@ -136,18 +136,26 @@ app.use(cors({
 // RATE LIMITING
 // ============================================
 
+// Odpověď při překročení limitu je JSON ve stejném tvaru jako ostatní chyby API,
+// ať ji frontend umí zobrazit (dřív šel prostý text → "Unexpected token 'T'").
+const limitMessage = (text: string) => ({ error: { message: text, statusCode: 429 } });
+
+// ⚠️ ZMĚNA (1.11.2026): limit byl 100 požadavků / 15 min na IP a vyčerpal ho
+// samotný přehled dávky (UI se ptá na stav každé 3 s = 300 požadavků / 15 min).
+// Teď 1000 / 15 min a dotazy na stav dávky se do limitu nepočítají.
 app.use('/api/', rateLimit({
     windowMs: 900000,
-    max: 100,
-    message: 'Too many requests from this IP, please try again later.',
+    max: 1000,
+    message: limitMessage('Too many requests from this IP, please try again later.'),
     standardHeaders: true,
     legacyHeaders: false,
+    skip: (req) => req.method === 'GET' && req.originalUrl.startsWith('/api/ai-calls/batch-status'),
 }));
 
 app.use('/api/auth/login', rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 5,
-    message: 'Too many login attempts, please try again later.',
+    message: limitMessage('Too many login attempts, please try again later.'),
     skipSuccessfulRequests: true,
 }));
 
