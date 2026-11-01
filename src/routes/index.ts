@@ -7,6 +7,7 @@ import invoiceDataRoutes from './invoiceData.routes';
 import leadsImportRoutes from './leadsImport.routes';
 import aiCallsRoutes from '../aiagent/routes/aiCalls.routes';
 import batchCallsRoutes from '../aiagent/routes/batchCalls.routes';
+import recordingsRoutes from '../aiagent/routes/recordings.routes';
 import alertsRoutes from './alerts.routes';
 const router = Router();
 
@@ -21,6 +22,8 @@ router.use('/leads', invoiceDataRoutes);
 router.use('/leads', leadsImportRoutes);
 router.use('/ai-calls', aiCallsRoutes);
 router.use('/ai-calls', batchCallsRoutes);
+// Veřejné přehrávání nahrávek (Asterisk) – záměrně mimo /ai-calls, tam je authenticate na celém routeru
+router.use('/recordings', recordingsRoutes);
 router.use('/alerts', alertsRoutes);
 
 router.get('/health', (_req, res) => {
