@@ -1,0 +1,2027 @@
+﻿
+===== src\server.ts =====
+
+import express, { Request, Response, NextFunction } from 'express';
+import session from 'express-session';
+import pgSession from 'connect-pg-simple';
+import helmet from 'helmet';
+import cors from 'cors';
+import rateLimit from 'express-rate-limit';
+import dotenv from 'dotenv';
+import http from 'http';
+import path from 'path';
+import { WebSocketServer } from 'ws';
+import pool, { testConnection } from './db/pool';
+import routes from './routes';
+import { AppError } from './utils/errors';
+import { callHandler } from './aiagent/websockets/callHandler';
+import { geminiCallHandler } from './aiagent/websockets/geminiCallHandler'; // ← NOVÉ
+
+dotenv.config();
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+const server = http.createServer(app);
+
+// ============================================
+// WEBSOCKET SERVER
+//
+// ⚠️ ZMĚNA — SELECT teď navíc čte acl.engine a podle něj routuje na
+// geminiCallHandler nebo callHandler (OpenAI, beze změny).
+// ============================================
+
+const wss = new WebSocketServer({
+    server,
+    path: '/api/ai-calls/websocket',
+});
+
+wss.on('connection', (ws, _req) => {
+    console.log('🔌 New WebSocket connection');
+
+    let callSid: string | null = null;
+    let isInitialized = false;
+
+    ws.on('message', async (message: Buffer) => {
+        try {
+            const data = JSON.parse(message.toString());
+
+            if (data.event === 'start' && !isInitialized) {
+                isInitialized = true;
+
+                callSid = data.start?.customParameters?.callSid || null;
+                const streamSid = data.start?.streamSid || null;
+
+                console.log('📞 WebSocket stream started:', { streamSid, callSid });
+
+                if (!callSid || !streamSid) {
+                    console.error('❌ Missing callSid or streamSid');
+                    ws.close();
+                    return;
+                }
+
+                try {
+                    const result = await pool.query(
+                        `SELECT l.id, l.company_name, l.contact_person, l.phone, acl.engine
+                         FROM leads l
+                         INNER JOIN ai_call_logs acl ON l.id = acl.lead_id
+                         WHERE acl.call_sid = $1`,
+                        [callSid]
+                    );
+
+                    if (result.rows.length === 0) {
+                        console.error('❌ Lead not found for call:', callSid);
+                        ws.close();
+                        return;
+                    }
+
+                    const lead = result.rows[0];
+
+                    console.log('✅ Lead loaded:', { id: lead.id, company: lead.company_name, engine: lead.engine });
+
+                    const leadData = {
+                        companyName: lead.company_name,
+                        contactPerson: lead.contact_person,
+                        phone: lead.phone,
+                    };
+
+                    if (lead.engine === 'gemini') {
+                        console.log('🔀 [Gemini] Routing to Gemini handler');
+                        await geminiCallHandler.handleConnection(ws, callSid, lead.id, leadData, streamSid);
+                    } else {
+                        await callHandler.handleConnection(ws, callSid, lead.id, leadData, streamSid);
+                    }
+                } catch (error) {
+                    console.error('❌ Failed to load call data:', error);
+                    ws.close();
+                }
+            }
+        } catch (error) {
+            console.error('❌ WebSocket message error:', error);
+        }
+    });
+
+    ws.on('close', () => console.log('🔌 WebSocket disconnected:', callSid || 'unknown'));
+    ws.on('error', (error) => console.error('❌ WebSocket error:', error));
+});
+
+console.log('✅ WebSocket server initialized on: /api/ai-calls/websocket (OpenAI/Gemini)');
+
+// ============================================
+// TRUST PROXY
+// ============================================
+
+app.set('trust proxy', 1);
+
+// ============================================
+// SECURITY MIDDLEWARE
+// ============================================
+
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            scriptSrc: ["'self'"],
+            imgSrc: ["'self'", 'data:', 'https:'],
+        },
+    },
+}));
+
+app.use(cors({
+    origin: [
+        'http://localhost:3000',
+        process.env.FRONTEND_URL || 'http://localhost:3000',
+    ],
+    credentials: true,
+}));
+
+// ============================================
+// RATE LIMITING
+// ============================================
+
+app.use('/api/', rateLimit({
+    windowMs: 900000,
+    max: 100,
+    message: 'Too many requests from this IP, please try again later.',
+    standardHeaders: true,
+    legacyHeaders: false,
+}));
+
+app.use('/api/auth/login', rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    message: 'Too many login attempts, please try again later.',
+    skipSuccessfulRequests: true,
+}));
+
+// ============================================
+// BODY PARSING
+// ============================================
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// ============================================
+// SESSION
+// ============================================
+
+const PgSession = pgSession(session);
+const isProduction = process.env.NODE_ENV === 'production';
+
+app.use(session({
+    store: new PgSession({
+        pool,
+        tableName: 'sessions',
+        createTableIfMissing: false,
+    }),
+    secret: process.env.SESSION_SECRET || 'change-this-in-production',
+    resave: false,
+    saveUninitialized: false,
+    proxy: true,
+    cookie: {
+        secure: isProduction,
+        httpOnly: true,
+        maxAge: 8 * 60 * 60 * 1000,
+        sameSite: isProduction ? 'none' : 'lax',
+        domain: isProduction ? undefined : 'localhost',
+    },
+    name: 'quantum_crm_session',
+}));
+
+// ============================================
+// API ROUTES
+// ============================================
+
+app.use('/api', routes);
+
+// ============================================
+// FRONTEND — statické soubory na /crm
+// ============================================
+
+const frontendBuildPath = path.join(__dirname, '..', 'frontend', 'build');
+
+app.use('/crm', express.static(frontendBuildPath));
+
+app.get('/crm/*', (_req: Request, res: Response) => {
+    res.sendFile(path.join(frontendBuildPath, 'index.html'));
+});
+
+// ============================================
+// ROOT
+// ============================================
+
+app.get('/', (_req: Request, res: Response) => {
+    res.status(200).json({
+        message: 'Quantum CRM Backend API',
+        version: '1.0.0',
+        status: 'running',
+        endpoints: {
+            health: '/api/health',
+            auth: '/api/auth/*',
+            users: '/api/users/*',
+            leads: '/api/leads/*',
+            aiCalls: '/api/ai-calls/*',
+            websocket: 'ws://[host]/api/ai-calls/websocket',
+            frontend: '/crm',
+        },
+    });
+});
+
+// ============================================
+// ERROR HANDLING
+// ============================================
+
+app.use((_req: Request, _res: Response, next: NextFunction) => {
+    next(new AppError(404, 'Route not found'));
+});
+
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+    console.error('❌ Error:', err);
+
+    if (err.isOperational) {
+        return res.status(err.statusCode).json({
+            error: { message: err.message, statusCode: err.statusCode },
+        });
+    }
+
+    if (err.code === '23505') {
+        return res.status(409).json({ error: { message: 'Resource already exists', statusCode: 409 } });
+    }
+
+    if (err.code === '23503') {
+        return res.status(400).json({ error: { message: 'Invalid reference', statusCode: 400 } });
+    }
+
+    return res.status(500).json({
+        error: {
+            message: isProduction ? 'Internal server error' : err.message,
+            statusCode: 500,
+        },
+    });
+});
+
+// ============================================
+// START SERVER
+// ============================================
+
+const startServer = async () => {
+    try {
+        console.log('🔍 Testing database connection...');
+        const dbConnected = await testConnection();
+
+        if (!dbConnected) {
+            console.error('❌ Failed to connect to database. Exiting...');
+            process.exit(1);
+        }
+
+        server.listen(PORT, () => {
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('✅ Quantum CRM Backend Started');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log(`🚀 Port: ${PORT}`);
+            console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+            console.log(`🔌 WebSocket: ws://localhost:${PORT}/api/ai-calls/websocket`);
+            console.log(`🤖 AI Calling: /api/ai-calls/*`);
+            console.log(`🖥️  Frontend: /crm`);
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        });
+    } catch (error) {
+        console.error('❌ Failed to start server:', error);
+        process.exit(1);
+    }
+};
+
+process.on('uncaughtException', (error) => {
+    console.error('❌ UNCAUGHT EXCEPTION:', error);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (error) => {
+    console.error('❌ UNHANDLED REJECTION:', error);
+    process.exit(1);
+});
+
+process.on('SIGTERM', () => {
+    server.close(() => { console.log('✅ Server closed'); process.exit(0); });
+});
+
+process.on('SIGINT', () => {
+    server.close(() => { console.log('✅ Server closed'); process.exit(0); });
+});
+
+startServer();
+
+===== src\handoff.md =====
+
+# Twilio + Odorik BYOC setup — kompletní návod
+**(aktualizováno 21.9.2026 — přidána druhá Odorik linka, opraveny dvě
+nepřesnosti z původní verze na základě živého ladění)**
+
+Tento dokument shrnuje **funkční, produkčně ověřenou** konfiguraci pro
+volání přes Twilio s Odorik mobilním/pevným CLIP (caller ID). Vychází
+z reálného nasazení pro Quantum CRM (klient Roman Hejda / Cante
+Trading).
+
+---
+
+## 1. Architektura — jak to celé funguje
+
+Backend → Odorik API (setForward: SIP jméno → cílové číslo)
+→ Twilio API (client.calls.create: to = sip:SIP_JMENO@sip.odorik.cz, byoc = trunk SID)
+→ Twilio BYOC trunk → Odorik SIP proxy
+→ Odorik přesměruje hovor na cílové číslo s CLIP dané linky
+→ Klient vidí CLIP té linky, ze které se volá, ne Twilio pevnou linku
+
+
+**Klíčový princip:** Odorik nedovolí volat přímo na libovolné cílové
+číslo přes SIP. Místo toho má tzv. **"veřejná čísla" / SIP jména**,
+která se před KAŽDÝM hovorem přes REST API dynamicky přesměrují na
+skutečné cílové číslo. Teprve pak se přes Twilio zavolá na to SIP
+jméno.
+
+**⚠️ Od 21.9.2026 podporujeme DVĚ nezávislé Odorik linky současně**
+(mobilní 790766 a pevná 793305) — sdílejí stejnou Twilio BYOC
+infrastrukturu, liší se jen CLIP a sadou SIP jmen. Viz sekce 11.
+
+---
+
+## 2. Zřízení SIP jména — DVĚ cesty
+
+### 2a) Přes email Petru Soukupovi (Odorik)
+
+Pro nový účet/projekt/linku je nutné od Odoriku (kontakt: Petr
+Soukup) získat:
+
+1. **SIP linka + přihlašovací údaje** — číslo linky + heslo.
+2. **REST API přístup** (Public Numbers API) — API user + API
+   password. **Toto jsou JINÉ credentials než SIP linka** — nezaměňovat.
+3. **Pevné číslo linky** — použije se jako Twilio "from" parametr.
+
+### 2b) ⚠️ NOVÉ (21.9.2026) — samoobslužně přes Odorik administraci
+
+**Zjištěno naživo:** SIP jméno lze zřídit i BEZ čekání na Petra
+Soukupa, přímo v Odorik webové administraci:
+
+1. Přihlásit se do Odorik administrace (odorik.cz/ucet)
+2. Záložka "průvodce nastavením" → v dropdownu "pro linku" vybrat
+   konkrétní linku
+3. Druhý dropdown: "Vlastní telefonní číslo / příchozí hovory /
+   přístupová čísla" → "Vlastní telefonní číslo"
+4. Třetí dropdown: "SIP jména"
+5. Do pole "Přidání nového SIP jména" zadat název a kliknout "přidat"
+
+Doporučený formát názvu (dle nápovědy přímo na stránce Odoriku):
+dlouhá výstižná jména, oddělovač `_` nebo `.`, **bez diakritiky**.
+
+**Ověřeno naostro (21.9.2026):** SIP jméno `hejda_pevna1` vytvořené
+tímto samoobslužným postupem začalo fungovat v Public Numbers API
+**okamžitě** — žádné zjevné čekání na schválení u T-Mobile.
+
+**⚠️ Nejistota k dořešení:** Není jasné, jestli T-Mobile schvalovací
+proces (viz níže) platí univerzálně pro všechna nová SIP jména, nebo
+jen pro určitý typ zřízení. Pro jistotu počítat s možností delšího
+čekání a vždy živě otestovat před nasazením do produkce.
+
+### Co dál platí beze změny
+
+**Nové SIP jméno musí být (možná) schváleno u T-Mobile** (Odorik běží
+na T-Mobile síti), než přes něj půjde reálně volat. Toto schválení
+může trvat delší dobu (týdny) — u Hejdy bylo `hejda_test1` schváleno
+rychle, `hejda_test2` čekalo na schválení mnohem déle, `hejda_pevna1`
+(zřízené samoobslužně) zjevně vůbec nečekalo. Backend musí číst pouze
+schválená/funkční SIP jména z ENV.
+
+**Co NENÍ potřeba žádat:** IP whitelist Twilio rozsahů. Finální
+fungující řešení je čistě přes SIP jména + REST API forwarding, žádný
+IP whitelist se nepoužívá.
+
+---
+
+## 3. Odorik REST API — Public Numbers
+
+**Base URL:** `https://www.odorik.cz/api/v1`
+**Dokumentace:** https://www.odorik.cz/w/api:public_numbers
+
+### Kritická poučka č. 1 — formát autentizace
+
+Odorik API **NEPOUŽÍVÁ HTTP Basic Auth**. Credentials (`user`,
+`password`) se posílají jako **query/form parametry** přímo v
+requestu. Použití Basic Auth vede k tichému selhání — API vrátí
+`200 OK`, ale route se ve skutečnosti neuloží.
+
+### Kritická poučka č. 2 — vždy smazat staré routes před nastavením nových
+
+**Než se nastaví nové přesměrování, MUSÍ se smazat všechny existující
+routes na daném SIP jménu.** Bez tohoto kroku zůstává aktivní staré
+přesměrování a hovor jde na špatné číslo. Řešení: `deleteAllRoutes(sipName)`
+se volá VŽDY před `setForward()`.
+
+### ⚠️ Kritická poučka č. 3 (NOVÁ, 21.9.2026) — Odorik API vrací chyby s HTTP 200
+
+**Odorik API nepoužívá chybové HTTP statusy pro věcné chyby.** Zjistili
+jsme naživo, že dotaz na neregistrované/neexistující veřejné číslo
+vrátí:
+
+POST /public_numbers/217217749/routes.json
+→ HTTP 200
+→ body: {"errors":["nonexisting_public_number"]}
+
+
+**Kód, který kontroluje jen HTTP status 200 (bez čtení
+`response.data.errors`), tohle vyhodnotí jako ÚSPĚCH** — přesměrování
+se ve skutečnosti vůbec nenastavilo, ale nic to nenahlásí. Tenhle bug
+byl objeven a opraven v `odorikService.ts` 21.9.2026 —
+`setForward()` teď `response.data.errors` kontroluje explicitně a v
+tom případě vyhodí skutečnou chybu.
+
+**Poučení pro budoucí ladění:** při diagnostice "hovor se nedovolal,
+ale API hlásilo úspěch" vždy zkontrolovat SUROVÉ tělo odpovědi, ne jen
+HTTP status.
+
+**Související zjištění:** holé číslo linky (to, co se v administraci
+zobrazuje jako "Veřejné telefonní číslo") **není automaticky
+routovatelné přes Public Numbers API**, i když v administraci existuje
+a vypadá funkčně. Musí pro něj existovat samostatně vytvořené SIP
+jméno (viz sekce 2), teprve to je API-registrované.
+
+### Endpointy
+
+**GET routes** — zjištění aktuálních routes na SIP jméně:
+
+GET /public_numbers/{sipName}/routes.json?user={apiUser}&password={apiPassword}
+
+
+**DELETE route** — smazání konkrétní route podle ID:
+
+DELETE /public_numbers/{sipName}/routes/{routeId}.json?user={apiUser}&password={apiPassword}
+
+
+**POST nová route** — nastavení přesměrování (form-urlencoded body,
+ne JSON):
+
+POST /public_numbers/{sipName}/routes.json
+Content-Type: application/x-www-form-urlencoded
+
+user={apiUser}&password={apiPassword}&source_number=*&ringing_number={formatovane cislo}
+
+
+### Formát volaného čísla — prefix *087
+
+Aby se na klientovi zobrazilo správné CLIP (ne Twilio pevná linka),
+musí být cílové číslo ve formátu s prefixem `*087`.
+
+Dvě fungující varianty formátu:
+- `*08700420737007770` — prefix *087 + mezinárodní formát BEZ znaku
+  `+` (00 + 420 + číslo)
+- `*087737007770` — prefix *087 + národní formát (jen 9 číslic, bez
+  předvolby)
+
+**Nedoporučeno:** varianta s `+` (`*087+420...`).
+
+Produkční implementace používá mezinárodní variantu (00420). Logika
+převodu:
+- Vstup může být `+420703034160`, `00420703034160`, nebo `703034160`
+- Vše se normalizuje na formát `00420XXXXXXXXX` (bez `+`)
+- Před to se přidá prefix `*087`
+- Výsledek: `*08700420703034160`
+
+### SIP jména = veřejná čísla
+
+V URL cestách API (`/public_numbers/{X}/routes.json`) se místo
+telefonního čísla použije přímo název SIP jména (např.
+`hejda_test1`, `hejda_pevna1`), bez jakékoli úpravy formátu.
+
+### Proč více SIP jmen = paralelní hovory
+
+Jedno SIP jméno = jedno přesměrování aktivní v jeden okamžik. Pokud by
+dva souběžné hovory sdílely stejné SIP jméno, druhé přesměrování by
+přepsalo první dřív, než by se stihl hovor dokončit → race condition.
+Proto: **1 worker = 1 SIP jméno**, žádné sdílení.
+
+---
+
+## 4. Twilio strana — BYOC (Bring Your Own Carrier) Trunk
+
+### Krok 1 — Vytvoření BYOC trunku
+
+V Twilio Console vytvořit nový BYOC Trunk.
+
+**⚠️ ZMĚNA (21.9.2026):** Původní verze tohoto dokumentu doporučovala
+trunk vytvářet "samostatný pro každý projekt/firmu, ne sdílený". Toto
+platí pro RŮZNÉ projekty/klienty (např. Quantum vs. VF-CRM), ale
+**NEPLATÍ pro více linek téhož Odorik účtu** — viz sekce 11.3 níže,
+kde je naživo ověřeno, že jeden BYOC trunk zvládá více Odorik linek
+současně.
+
+### Krok 2 — Origination Connection Policy
+
+Řídí směr **Twilio → Odorik** (odchozí hovory iniciované backendem).
+
+**⚠️ OPRAVA (21.9.2026) — rozpor s původním textem:**
+
+Původní verze tohoto dokumentu tvrdila, že funkční řešení jsou
+credentials vložené přímo do Origination URI:
+
+sip:{SIP_LINKA_USER}:{SIP_LINKA_PASSWORD}@sip.odorik.cz
+
+
+**Prohlédli jsme si naživo produkční trunk ("Odorik BYOC", SID
+`BY40d710bc9044404d8c3cd49da59cab5d`), který reálně a prokazatelně
+funguje pro linku 790766** — jeho Origination Target URI je pouze:
+
+sip:sip.odorik.cz
+
+
+**BEZ jakýchkoliv credentials.** Nevíme jistě, proč se to od
+zdokumentovaného stavu liší (možná se nastavení v mezičase
+zjednodušilo, možná dokument popisoval jinou fázi ladění, možná byl
+tenhle detail od začátku nepřesný). Faktem je, že **aktuální produkční
+nastavení funguje bez credentials v URI** a autentizace/routing na
+Odorik straně zjevně probíhá jinak — pravděpodobně přes kombinaci
+Caller ID (`From` číslo) a cílového SIP jména v `To` poli, ne přes
+per-linka SIP autentizaci na Twilio trunku.
+
+**Praktický důsledek:** při zakládání nové Odorik linky (nebo nového
+klienta) vyzkoušet nejdřív holé `sip:sip.odorik.cz` bez credentials —
+podle všeho to funguje a je to jednodušší.
+
+Postup v Twilio Console: BYOC Trunk → Origination Connection Policy →
+Destination → Edit origination policy → Target URI.
+
+### Krok 3 — Termination SIP Domain (pravděpodobně NENÍ potřeba)
+
+Řeší opačný směr (Odorik → Twilio, inbound), který pro čistě odchozí
+volací flow není nutný. Doporučení: zkusit nejdřív BEZ konfigurace
+Termination SIP Domain.
+
+### Volání z backendu
+
+```javascript
+client.calls.create({
+  to: 'sip:hejda_test1@sip.odorik.cz',   // SIP jméno, ne telefonní číslo
+  from: odorikNumber,                     // CLIP dané linky (ODORIK_PHONE_NUMBER nebo ODORIK_PEVNA_PHONE_NUMBER)
+  byoc: odorikTrunkSid,                   // SID BYOC trunku — SPOLEČNÝ pro obě linky
+  url: '.../webhook/twiml',
+  // ... zbytek standardních Twilio call parametrů
+})
+```
+
+Poznámka: v `normalizePhoneNumber()` je potřeba detekovat prefix
+`sip:` a v tom případě přeskočit běžnou E.164 validaci telefonního
+čísla.
+
+---
+
+## 5. Kompletní flow jednoho hovoru (pořadí kroků)
+
+1. Worker (přiřazený ke konkrétnímu SIP jménu a Odorik lince) si
+   vezme lead z fronty
+2. Backend zavolá Odorik API: `deleteAllRoutes(sipName)` — smaže staré
+   přesměrování
+3. Backend zavolá Odorik API: `setForward(sipName, leadPhone)` —
+   nastaví nové přesměrování ve formátu `*087...`
+4. Backend zavolá Twilio API: `client.calls.create({ to:
+   'sip:{sipName}@sip.odorik.cz', from: {CLIP dané linky}, byoc:
+   trunkSid, ... })`
+5. Twilio odešle SIP INVITE na Odorik přes BYOC trunk
+6. Odorik přijme INVITE na dané SIP jméno, najde aktivní přesměrování
+   (z kroku 3) a přesměruje hovor na cílové číslo s CLIP té linky, ze
+   které se volá
+7. Klient vidí CLIP dané linky, zvedne, AI agent mluví přes standardní
+   Twilio Media Stream WebSocket
+
+---
+
+## 6. ENV proměnné potřebné v backendu
+
+ODORIK_API_USER=<REST API user od Odoriku — společný pro celý účet, obě linky>
+ODORIK_API_PASSWORD=<REST API heslo od Odoriku — společný pro celý účet, obě linky>
+ODORIK_BYOC_TRUNK_SID=<SID Twilio BYOC trunku — SPOLEČNÝ pro obě linky>
+
+Mobilní linka (790766)
+
+ODORIK_SIP_NAME_1=<první SCHVÁLENÉ/FUNKČNÍ SIP jméno mobilní linky>
+ODORIK_SIP_NAME_2=<druhé SCHVÁLENÉ/FUNKČNÍ SIP jméno mobilní linky, pokud existuje>
+ODORIK_PHONE_NUMBER=<CLIP mobilní linky — 703614594>
+
+Pevná linka (793305) — NOVÉ 21.9.2026
+
+ODORIK_PEVNA_SIP_NAME_1=<první FUNKČNÍ SIP jméno pevné linky — hejda_pevna1>
+ODORIK_PEVNA_PHONE_NUMBER=<CLIP pevné linky — 217217749>
+
+
+**Kritické pravidlo:** Do `ODORIK_SIP_NAME_X` / `ODORIK_PEVNA_SIP_NAME_X`
+proměnných se smí dávat POUZE SIP jména, která jsou ověřeně funkční
+(otestovaná živým hovorem). Backend čte tyto proměnné sekvenčně (`_1`,
+`_2`, `_3`...) a zastaví se na první mezeře — počet nalezených jmen =
+počet dostupných paralelních workerů pro danou linku.
+
+SIP linka credentials (číslo linky + heslo pro Origination URI) —
+podle zjištění v sekci 4 se aktuálně NEPOUŽÍVAJÍ v produkčním trunku
+vůbec, takže se nikam do ENV nedávají.
+
+---
+
+## 7. Shrnutí známých chyb a jejich řešení
+
+| Problém | Příčina | Řešení |
+|---|---|---|
+| API vrací 200 OK, ale route se neuloží | Použití HTTP Basic Auth místo query/form parametrů | Credentials posílat jako `user`/`password` v query stringu nebo form body |
+| Hovor jde na staré/špatné číslo | Stará route zůstala aktivní na SIP jméně | Vždy `deleteAllRoutes()` PŘED `setForward()` |
+| API vrací 200 OK s `{"errors":[...]}`, kód to loguje jako úspěch | Kód nekontroluje `response.data.errors`, jen HTTP status | Explicitní kontrola `response.data.errors` v `setForward()`/`getRoutes()` — opraveno 21.9.2026 |
+| `nonexisting_public_number` chyba | Holé číslo linky není registrované jako veřejné číslo v Public Numbers API | Vytvořit SIP jméno pro danou linku (samoobslužně, viz sekce 2b) |
+| CLIP se nepřenáší správně / zákazník vidí divné číslo | Chybný formát ringing_number (např. s `+` místo `00`) | Použít `*08700420XXXXXXXXX` (bez `+`) |
+| Dva souběžné hovory si "přepisují" přesměrování | Sdílené jedno SIP jméno mezi dvěma workery | Striktně 1 worker = 1 SIP jméno |
+| Nové SIP jméno nefunguje i přes správnou konfiguraci | Případně čeká na schválení u T-Mobile (ne vždy — viz sekce 2b) | Počkat na schválení, do té doby nedávat jméno do ENV; otestovat živě |
+
+---
+
+## 8. Co bude potřeba specificky pro nový projekt/klienta
+
+Oproti Hejdovu/Quantum nastavení bude nutné:
+
+1. Nový, samostatný Twilio BYOC trunk (ne sdílet s Hejdovým — platí
+   pro RŮZNÉ klienty/projekty; pro více linek TÉHOŽ klienta viz
+   sekce 11.3, tam sdílení funguje)
+2. Nová sada Odorik credentials — SIP linka, REST API user/password,
+   SIP jméno
+3. Origination Connection Policy — vyzkoušet nejdřív bez credentials
+   v URI (viz oprava v sekci 4), případně s credentials, pokud holé
+   `sip:sip.odorik.cz` nefunguje
+4. Backend kód lze převzít 1:1 stejný jako u Quantum — mění se jen ENV
+   hodnoty, žádná logika
+
+---
+
+## 9. Aplikační vrstva v Quantum backendu (odkaz)
+
+Odorik logika je rozdělená do:
+- `src/aiagent/services/odorikService.ts` — REST API klient,
+  `getActiveSipNames(line)`, `getPhoneNumberForLine(line)`,
+  `setForward()`, `deleteAllRoutes()`
+- `src/aiagent/services/callOrchestrator.ts` — orchestrace hovoru,
+  přijímá `provider`/`engine`/`odorikLine` jako nezávislé parametry
+- `POST /api/ai-calls/start` — přijímá `provider: 'twilio'|'odorik'`,
+  `engine: 'openai'|'gemini'`, `odorikLine: 'mobilni'|'pevna'`
+- Frontend `Calling.tsx` — přepínač linky viditelný jen když je
+  vybraný `provider === 'odorik'`
+
+---
+
+## 10. Historie: proč vůbec Odorik místo přímého Twilio
+
+Přímý Twilio hovor na českou mobilní síť je řádově dražší (viz cenová
+analýza z 22.9.2026 — Twilio přímé volání na mobil ČR ~$0.15/min vs.
+Odorik BYOC ~$0.004/min Twilio poplatek + Odorik vlastní tarif) a
+zákazník navíc vidí cizí/zahraniční číslo místo českého mobilního
+CLIP, což zjevně zhoršuje answer rate.
+
+---
+
+## 11. DRUHÁ ODORIK LINKA — pevná pražská 793305 (NOVÉ, 21.9.2026)
+
+### 11.1 Kontext
+
+Mobilní linka 790766 (CLIP 703614594) měla dlouhodobě zhoršující se
+answer rate — zákazníci ji pravděpodobně začali rozpoznávat/blokovat
+jako podezřelé/spamové číslo. Řešení: přidat druhou, nezávislou
+Odorik linku s jiným CLIP — pevnou pražskou — a umožnit v aplikaci
+volbu mezi nimi (A/B test answer rate).
+
+### 11.2 Údaje o nové lince
+
+| Položka | Hodnota |
+|---|---|
+| Číslo v síti (linka) | 793305 |
+| Veřejné telefonní číslo / CLIP | 217217749 |
+| SIP proxy | sip.odorik.cz (stejný jako u 790766) |
+| SIP jméno (vytvořeno samoobslužně, viz sekce 2b) | hejda_pevna1 |
+| SIP heslo linky (pro referenci — v produkčním trunku se nepoužívá, viz sekce 4) | 16oQDkeDAVAs |
+
+Na rozdíl od linky 790766 (kde je "veřejné telefonní číslo" a CLIP
+oddělené a existují navíc dva SIP jméno aliasy hejda_test1/
+hejda_test2), u linky 793305 je veřejné číslo a CLIP STEJNÁ hodnota
+(217217749) — SIP jméno hejda_pevna1 je až doplněk vytvořený navíc
+pro účely API routingu.
+
+### 11.3 KLÍČOVÉ ZJIŠTĚNÍ — sdílený Twilio BYOC trunk
+
+Testem ověřeno (21.9.2026): **obě linky (790766 i 793305) fungují přes
+STEJNÝ Twilio BYOC trunk** (`BY40d710bc9044404d8c3cd49da59cab5d`,
+"Odorik BYOC"). Nebyl potřeba žádný druhý trunk, i když jsme s ním
+původně počítali.
+
+**Praktický důsledek pro budoucnost:** přidání další (třetí, čtvrté...)
+Odorik linky pravděpodobně NEBUDE vyžadovat nový BYOC trunk — stačí
+nové SIP jméno vytvořené na dané lince a nová ENV proměnná s CLIP
+číslem té linky.
+
+### 11.4 Proces zřízení — postup, jak byla 793305/hejda_pevna1 uvedena do provozu
+
+1. Zjistit z Odorik administrace (tabulka "Máte k dispozici následující
+   linky"), že nová linka existuje a jaké má veřejné číslo/CLIP
+2. Zjistit, že HOLÉ číslo linky (217217749) NENÍ samo o sobě
+   registrované v Public Numbers API — test `GET
+   /public_numbers/217217749/routes.json` vrátí
+   `{"errors":["nonexisting_public_number"]}`
+3. Vytvořit SIP jméno pro tuhle linku samoobslužně v Odorik
+   administraci (viz sekce 2b) — `hejda_pevna1`
+4. Ověřit, že nové SIP jméno JE registrované: `setForward('hejda_pevna1',
+   ...)` proběhne bez chyby, s validním `data.id`
+5. Živý testovací hovor (Twilio `calls.create` se STÁVAJÍCÍM BYOC
+   trunk SID, `to: sip:hejda_pevna1@sip.odorik.cz`, `from:
+   +420217217749`) — potvrzeno: zákazník zvedne, CLIP na displeji je
+   217217749
+
+Celý proces od "zjištění nové linky v administraci" po "ověřený
+funkční hovor" proběhl samoobslužně, bez nutnosti čekat na odpověď od
+Petra Soukupa.
+
+### 11.5 ENV proměnné — viz sekce 6 výše (kompletní aktuální seznam)
+
+### 11.6 Aplikační vrstva — viz sekce 9 výše
+
+===== src\aiagent\controllers\aiCalls.controller.ts =====
+
+import { Request, Response, NextFunction } from 'express';
+import pool, { rowsToCamelCase } from '../../db/pool';
+import { callOrchestrator } from '../services/callOrchestrator';
+import { twilioService } from '../services/twilioService';
+import { BadRequestError, NotFoundError } from '../../utils/errors';
+import { odorikService } from '../services/odorikService';
+import { geminiCallHandler } from '../websockets/geminiCallHandler';
+import {
+    StartAICallingRequest, StartAICallingResponse, StopAICallingResponse,
+    AICallStatusResponse, AICallLog, AICallLogsQuery, AICallLogsResponse,
+    CallEngine, CallProvider, OdorikLine, CallMode,
+} from '../types/aiCalls.types';
+
+const DEFAULT_AI_AGENT_ID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
+
+// ============================================
+// HELPER: načti čísla workerů z ENV
+// AI_PHONE_1, AI_PHONE_2, ... AI_PHONE_5
+// Fallback na TWILIO_PHONE_NUMBER
+// ============================================
+const getWorkerPhoneNumbers = (): string[] => {
+    const numbers: string[] = [];
+    let i = 1;
+    while (true) {
+        const num = process.env[`AI_PHONE_${i}`];
+        if (!num) break;
+        numbers.push(num);
+        i++;
+    }
+    if (numbers.length === 0 && process.env.TWILIO_PHONE_NUMBER) {
+        numbers.push(process.env.TWILIO_PHONE_NUMBER);
+    }
+    return numbers;
+};
+
+// ============================================
+// POST /api/ai-calls/start
+//
+// Čtyři nezávislé osy:
+//   provider: 'twilio' | 'odorik'  (default 'twilio')
+//   engine:   'openai' | 'gemini'  (default 'openai')
+//   odorikLine: 'mobilni' | 'pevna' | 'fb' (default 'mobilni') —
+//               relevantní jen když provider='odorik'
+//   callMode: 'parallel' | 'rotating' (default 'parallel') — NOVÉ
+//             (24.9.2026). 'parallel' = dosavadní chování beze
+//             změny. 'rotating' = sekvenční zpracování s rotující
+//             identitou (SIP jméno + vlastní CLIP) mezi hovory —
+//             určeno primárně pro 'fb' linku (7 identit, každá
+//             vlastní CLIP, anti-spam rozprostření zátěže).
+// ============================================
+export const startAICalling = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const {
+            leadIds,
+            maxCalls = 50,
+            agentUserId,
+            workers = 1,
+            provider = 'twilio',
+            engine = 'openai',
+            odorikLine = 'mobilni',
+            callMode = 'parallel',
+        } = req.body as StartAICallingRequest & { agentUserId?: string; workers?: number };
+
+        const activeAgentId = agentUserId || process.env.AI_AGENT_USER_ID || DEFAULT_AI_AGENT_ID;
+
+        const validProviders = ['twilio', 'odorik'];
+        const activeProvider = (validProviders.includes(provider as string) ? provider : 'twilio') as CallProvider;
+
+        const validEngines = ['openai', 'gemini'];
+        const activeEngine = (validEngines.includes(engine as string) ? engine : 'openai') as CallEngine;
+
+        const validOdorikLines = ['mobilni', 'pevna', 'fb'];
+        const activeOdorikLine = (validOdorikLines.includes(odorikLine as string) ? odorikLine : 'mobilni') as OdorikLine;
+
+        const validCallModes = ['parallel', 'rotating'];
+        const activeCallMode = (validCallModes.includes(callMode as string) ? callMode : 'parallel') as CallMode;
+
+        // ⚠️ NOVÉ (24.9.2026) — bezpečnostní pojistka: FB skupina nemá
+        // sdílené CLIP (každá identita má vlastní), takže 'parallel'
+        // mód by volal getPhoneNumberForLine('fb') → prázdný string →
+        // pád s nejasnou chybou. Radši explicitní, srozumitelná chyba
+        // hned na vstupu.
+        if (activeProvider === 'odorik' && activeOdorikLine === 'fb' && activeCallMode === 'parallel') {
+            throw new BadRequestError('FB linka podporuje pouze callMode="rotating" (každá ze 7 identit má vlastní CLIP, sdílené číslo pro parallel mód neexistuje)');
+        }
+
+        console.log(`🚀 AI Calling start requested by: ${req.user?.fullName} | Agent: ${activeAgentId}`);
+        console.log('📋 Parameters:', { leadIds, maxCalls, agentUserId: activeAgentId, workers, provider: activeProvider, engine: activeEngine, odorikLine: activeProvider === 'odorik' ? activeOdorikLine : undefined, callMode: activeCallMode });
+
+        const agentCheck = await pool.query(
+            `SELECT id, full_name FROM users WHERE id = $1 AND is_active = true`,
+            [activeAgentId]
+        );
+        if (agentCheck.rows.length === 0) throw new BadRequestError(`Agent ${activeAgentId} nenalezen`);
+
+        // ── Načtení leadů — společné pro OBA módy (parallel i rotating)
+        let leads;
+        if (leadIds && leadIds.length > 0) {
+            const result = await pool.query(
+                `SELECT id, company_name, contact_person, phone
+                 FROM leads
+                 WHERE id = ANY($1) AND status = 'NOVY' AND assigned_to = $2`,
+                [leadIds, activeAgentId]
+            );
+            leads = result.rows;
+        } else {
+            leads = await callOrchestrator.getLeadsForCalling(activeAgentId, maxCalls);
+        }
+
+        if (leads.length === 0) throw new BadRequestError('Žádné leady k volání');
+
+        // ============================================
+        // ROTATING MÓD (24.9.2026)
+        // Sekvenční zpracování, identita (SIP jméno + VLASTNÍ CLIP) se
+        // mění kolo dokola s každým dalším hovorem. Používá
+        // getIdentitiesForLine() — na rozdíl od 'parallel' módu níže,
+        // který zůstává BEZE ZMĚNY a dál používá getActiveSipNames()/
+        // getPhoneNumberForLine().
+        // ============================================
+        if (activeCallMode === 'rotating') {
+            if (activeProvider !== 'odorik') {
+                throw new BadRequestError('Rotující mód je podporován pouze pro provider="odorik"');
+            }
+
+            const identities = odorikService.getIdentitiesForLine(activeOdorikLine);
+            if (identities.length === 0) {
+                throw new BadRequestError(`Žádné identity nejsou k dispozici pro linku '${activeOdorikLine}'`);
+            }
+
+            console.log(`✅ Found ${leads.length} leads to call (ROTATING, ${identities.length} identit, provider=odorik, linka=${activeOdorikLine}, engine=${activeEngine})`);
+
+            setImmediate(async () => {
+                console.log(`🔄 Starting rotating mode: ${identities.length} identit, ${leads.length} leadů...`);
+
+                for (let i = 0; i < leads.length; i++) {
+                    const lead = leads[i];
+                    const identity = identities[i % identities.length];
+
+                    try {
+                        console.log(`📞 [Rotating ${i + 1}/${leads.length}] Calling ${lead.id} (${lead.phone}) via ${identity.sipName} (${identity.fromNumber})...`);
+                        await callOrchestrator.processLead(
+                            lead.id, activeAgentId, activeEngine, activeProvider,
+                            identity.sipName, activeOdorikLine, identity.fromNumber
+                        );
+                        console.log(`✅ [Rotating] Done: ${lead.id}`);
+                    } catch (error) {
+                        console.error(`❌ [Rotating] Failed: ${lead.id}:`, error);
+                    }
+                }
+
+                console.log('🎉 Rotating mode completed!');
+            });
+
+            res.status(200).json({
+                success: true,
+                message: `Rotující volání spuštěno: ${identities.length} identit, ${leads.length} leadů (provider=odorik, linka=${activeOdorikLine}, engine=${activeEngine})`,
+                queuedLeads: leads.length,
+                aiAgentId: activeAgentId,
+                agentName: agentCheck.rows[0].full_name,
+                callMode: 'rotating',
+                provider: activeProvider,
+                engine: activeEngine,
+                odorikLine: activeOdorikLine,
+                identitiesUsed: identities.map(id => id.sipName),
+            } as StartAICallingResponse & Record<string, any>);
+            return;
+        }
+
+        // ============================================
+        // 'parallel' MÓD — BEZE ZMĚNY oproti dosavadnímu chování
+        // ============================================
+        let callerIdentifiers: string[];
+
+        if (activeProvider === 'odorik') {
+            callerIdentifiers = odorikService.getActiveSipNames(activeOdorikLine);
+            if (callerIdentifiers.length === 0) {
+                throw new BadRequestError(`Žádná SIP jména nejsou nakonfigurována pro linku '${activeOdorikLine}'`);
+            }
+            if (!odorikService.getPhoneNumberForLine(activeOdorikLine)) {
+                throw new BadRequestError(`Odorik CLIP číslo pro linku '${activeOdorikLine}' není nakonfigurováno v ENV`);
+            }
+        } else {
+            callerIdentifiers = getWorkerPhoneNumbers();
+            if (callerIdentifiers.length === 0) {
+                throw new BadRequestError('Žádná AI_PHONE_X čísla nejsou nakonfigurována');
+            }
+        }
+
+        const actualWorkers = Math.min(Math.max(1, workers), callerIdentifiers.length);
+        if (actualWorkers < workers) {
+            console.warn(`⚠️ Požadováno ${workers} workerů ale máme ${callerIdentifiers.length} ${activeProvider === 'odorik' ? 'SIP jmen' : 'čísel'} → spouštíme ${actualWorkers}`);
+        }
+
+        console.log(`📞 Worker ${activeProvider === 'odorik' ? 'SIP jména' : 'čísla'} (${actualWorkers}):`, callerIdentifiers.slice(0, actualWorkers));
+
+        console.log(`✅ Found ${leads.length} leads to call (${actualWorkers} workers, provider=${activeProvider}, engine=${activeEngine})`);
+
+        const workerLeads: any[][] = Array.from({ length: actualWorkers }, () => []);
+        leads.forEach((lead: any, index: number) => {
+            workerLeads[index % actualWorkers].push(lead);
+        });
+
+        workerLeads.forEach((chunk, i) => {
+            console.log(`👷 Worker ${i + 1} (${callerIdentifiers[i]}): ${chunk.length} leadů`);
+        });
+
+        setImmediate(async () => {
+            console.log(`🎯 Starting ${actualWorkers} parallel workers (provider: ${activeProvider}, engine: ${activeEngine})...`);
+
+            const workerPromises = workerLeads.map((chunk, workerIndex) => {
+                const callerIdentifier = callerIdentifiers[workerIndex];
+
+                return (async () => {
+                    console.log(`🟢 Worker ${workerIndex + 1} (${callerIdentifier}) started with ${chunk.length} leads`);
+
+                    for (const lead of chunk) {
+                        try {
+                            console.log(`📞 [Worker ${workerIndex + 1}] Calling ${lead.id} (${lead.phone})...`);
+                            await callOrchestrator.processLead(lead.id, activeAgentId, activeEngine, activeProvider, callerIdentifier, activeOdorikLine);
+                            console.log(`✅ [Worker ${workerIndex + 1}] Done: ${lead.id}`);
+                        } catch (error) {
+                            console.error(`❌ [Worker ${workerIndex + 1}] Failed: ${lead.id}:`, error);
+                        }
+                    }
+
+                    console.log(`🏁 Worker ${workerIndex + 1} (${callerIdentifier}) finished`);
+                })();
+            });
+
+            await Promise.all(workerPromises);
+            console.log('🎉 All workers completed!');
+        });
+
+        res.status(200).json({
+            success: true,
+            message: `AI calling started: ${actualWorkers} workerů, ${leads.length} leadů (provider=${activeProvider}, engine=${activeEngine}${activeProvider === 'odorik' ? `, linka=${activeOdorikLine}` : ''})`,
+            queuedLeads: leads.length,
+            aiAgentId: activeAgentId,
+            agentName: agentCheck.rows[0].full_name,
+            workers: actualWorkers,
+            provider: activeProvider,
+            engine: activeEngine,
+            odorikLine: activeProvider === 'odorik' ? activeOdorikLine : undefined,
+            callMode: 'parallel',
+            workerIdentifiers: callerIdentifiers.slice(0, actualWorkers),
+            leadsPerWorker: workerLeads.map((chunk, i) => ({
+                worker: i + 1,
+                identifier: callerIdentifiers[i],
+                leads: chunk.length,
+            })),
+        } as StartAICallingResponse & Record<string, any>);
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const stopAICalling = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        console.log('🛑 AI Calling stop requested by:', req.user?.fullName);
+        res.status(200).json({
+            success: true,
+            message: 'Stop not yet implemented - calls will complete naturally',
+            stoppedCalls: 0,
+        } as StopAICallingResponse);
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getAICallStatus = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const activeCallsResult = await pool.query(
+            `SELECT l.id, l.company_name, l.phone, l.ai_call_status, l.ai_last_call_at
+             FROM leads l WHERE l.ai_call_status = 'calling'`
+        );
+
+        const currentCall = activeCallsResult.rows.length > 0 ? {
+            leadId: activeCallsResult.rows[0].id,
+            companyName: activeCallsResult.rows[0].company_name,
+            phone: activeCallsResult.rows[0].phone,
+            aiCallStatus: activeCallsResult.rows[0].ai_call_status,
+            startedAt: activeCallsResult.rows[0].ai_last_call_at,
+        } : null;
+
+        const queueResult = await pool.query(
+            `SELECT COUNT(*) as count FROM leads WHERE status = 'NOVY' AND assigned_to = $1`,
+            [process.env.AI_AGENT_USER_ID || DEFAULT_AI_AGENT_ID]
+        );
+
+        const todayResult = await pool.query(
+            `SELECT
+                COUNT(*) FILTER (WHERE status = 'completed') as completed,
+                COUNT(*) FILTER (WHERE outcome = 'CHCE_KONTAKT_AI') as successful
+             FROM ai_call_logs WHERE DATE(created_at) = CURRENT_DATE`
+        );
+
+        res.status(200).json({
+            isRunning: activeCallsResult.rows.length > 0,
+            activeCalls: activeCallsResult.rows.length,
+            currentCall,
+            queueSize: parseInt(queueResult.rows[0].count),
+            completedToday: parseInt(todayResult.rows[0].completed || 0),
+            successfulToday: parseInt(todayResult.rows[0].successful || 0),
+        } as AICallStatusResponse & Record<string, any>);
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getAICallLogs = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { leadId, status, outcome, startDate, endDate, limit = 50, offset = 0 } = req.query as any as AICallLogsQuery;
+
+        const conditions: string[] = [];
+        const params: any[] = [];
+        let paramIndex = 1;
+
+        if (leadId) { conditions.push(`lead_id = $${paramIndex}`); params.push(leadId); paramIndex++; }
+        if (status) { conditions.push(`status = $${paramIndex}`); params.push(status); paramIndex++; }
+        if (outcome) { conditions.push(`outcome = $${paramIndex}`); params.push(outcome); paramIndex++; }
+        if (startDate) { conditions.push(`created_at >= $${paramIndex}`); params.push(startDate); paramIndex++; }
+        if (endDate) { conditions.push(`created_at <= $${paramIndex}`); params.push(endDate); paramIndex++; }
+
+        const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+        const countResult = await pool.query(`SELECT COUNT(*) as total FROM ai_call_logs ${whereClause}`, params);
+        const total = parseInt(countResult.rows[0].total);
+
+        params.push(limit, offset);
+        const result = await pool.query(
+            `SELECT id, lead_id, call_sid, status, outcome, duration, transcript, ai_notes,
+                    error_message, recording_url, recording_sid, started_at, completed_at, created_at, engine
+             FROM ai_call_logs ${whereClause}
+             ORDER BY created_at DESC
+             LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+            params
+        );
+
+        const logs = rowsToCamelCase<AICallLog>(result.rows);
+        const page = Math.floor((offset as number) / (limit as number)) + 1;
+
+        res.status(200).json({ logs, total, page, limit: limit as number } as AICallLogsResponse);
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getAICallLogDetail = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { id } = req.params;
+
+        const result = await pool.query(
+            `SELECT acl.*, l.company_name, l.contact_person, l.phone, l.status as lead_status
+             FROM ai_call_logs acl
+             INNER JOIN leads l ON acl.lead_id = l.id
+             WHERE acl.id = $1`,
+            [id]
+        );
+
+        if (result.rows.length === 0) throw new NotFoundError('Call log not found');
+
+        res.status(200).json({ log: result.rows[0] });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const getTwiML = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const callSid = req.body.CallSid;
+        console.log('📋 TwiML requested for call:', callSid);
+        const twiml = twilioService.generateTwiML(callSid);
+        res.type('text/xml');
+        res.send(twiml);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// POST /api/ai-calls/webhook/status-callback
+//
+// Na Twilio 'ringing' eventu se pro Gemini hovory spustí prewarm
+// (viz geminiCallHandler.prewarmCall). Pro OpenAI hovory (engine !==
+// 'gemini') se tahle větev vůbec nespustí.
+// ============================================
+export const handleStatusCallback = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { CallSid, CallDuration, CallStatus } = req.body;
+
+        console.log('📞 Twilio status callback:', { CallSid, CallStatus });
+
+        await pool.query(
+            `UPDATE ai_call_logs SET duration = COALESCE(duration, $1) WHERE call_sid = $2`,
+            [CallDuration || 0, CallSid]
+        );
+
+        if (CallStatus === 'ringing') {
+            try {
+                const result = await pool.query(
+                    `SELECT l.id AS lead_id, l.company_name, l.contact_person, l.phone, l.assigned_to, acl.engine
+                     FROM ai_call_logs acl
+                     INNER JOIN leads l ON l.id = acl.lead_id
+                     WHERE acl.call_sid = $1`,
+                    [CallSid]
+                );
+
+                if (result.rows.length > 0 && result.rows[0].engine === 'gemini') {
+                    const row = result.rows[0];
+                    geminiCallHandler.prewarmCall(
+                        CallSid,
+                        row.lead_id,
+                        row.assigned_to,
+                        {
+                            companyName: row.company_name,
+                            contactPerson: row.contact_person,
+                            phone: row.phone,
+                        }
+                    ).catch(err => console.error('❌ Gemini prewarm error:', err));
+                }
+            } catch (err) {
+                console.error('❌ Gemini prewarm lookup error:', err);
+            }
+        }
+
+        res.status(200).send('OK');
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const handleRecordingCallback = async (req: Request, res: Response, _next: NextFunction): Promise<void> => {
+    try {
+        const { RecordingSid, RecordingUrl, RecordingStatus, CallSid } = req.body;
+
+        console.log('🎙️ Recording callback:', { RecordingSid, RecordingStatus, CallSid });
+
+        if (RecordingStatus !== 'completed') {
+            res.status(200).send('OK');
+            return;
+        }
+
+        const callLogResult = await pool.query(
+            `SELECT id FROM ai_call_logs WHERE call_sid = $1`, [CallSid]
+        );
+
+        if (callLogResult.rows.length === 0) {
+            res.status(200).send('OK');
+            return;
+        }
+
+        await pool.query(
+            `UPDATE ai_call_logs SET recording_url = $1, recording_sid = $2 WHERE call_sid = $3`,
+            [`${RecordingUrl}.mp3`, RecordingSid, CallSid]
+        );
+
+        console.log('✅ Recording URL saved');
+        res.status(200).send('OK');
+    } catch (error) {
+        console.error('❌ Recording callback error:', error);
+        res.status(200).send('OK');
+    }
+};
+
+// ============================================
+// POST /api/ai-calls/test-odorik
+//
+// Beze změny chování — historicky NEVOLÁ odorikService.setForward()
+// a nestaví sip: URI destinaci — jen dial lead.phone přímo s "from"
+// nastaveným na ODORIK_PHONE_NUMBER (mobilní linka). Pro test i
+// setForward kroku nebo jiné linky použij /start s
+// provider='odorik' a odorikLine/callMode dle potřeby.
+// ============================================
+export const startOdorikTestCall = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { leadId } = req.body;
+
+        if (!leadId) {
+            throw new BadRequestError('leadId je povinný v request body');
+        }
+
+        const odorikNumber = process.env.ODORIK_PHONE_NUMBER;
+        if (!odorikNumber) {
+            throw new BadRequestError('ODORIK_PHONE_NUMBER není nakonfigurováno v ENV');
+        }
+
+        console.log(`🧪 Odorik test call requested by: ${req.user?.fullName}`);
+        console.log(`📞 Lead ID: ${leadId} | From: ${odorikNumber}`);
+
+        const activeAgentId = process.env.AI_AGENT_USER_ID || DEFAULT_AI_AGENT_ID;
+
+        const leadCheck = await pool.query(
+            `SELECT id, company_name, contact_person, phone
+             FROM leads
+             WHERE id = $1`,
+            [leadId]
+        );
+
+        if (leadCheck.rows.length === 0) {
+            throw new BadRequestError(`Lead ${leadId} nenalezen v DB`);
+        }
+
+        const lead = leadCheck.rows[0];
+
+        console.log(`🚀 [ODORIK TEST] Volám: ${lead.phone} přes ${odorikNumber}`);
+
+        setImmediate(async () => {
+            try {
+                await callOrchestrator.processLead(leadId, activeAgentId, 'openai', 'twilio', odorikNumber);
+                console.log(`✅ [ODORIK TEST] Hovor dokončen pro lead ${leadId}`);
+            } catch (error) {
+                console.error(`❌ [ODORIK TEST] Chyba:`, error);
+            }
+        });
+
+        res.status(200).json({
+            success: true,
+            message: 'Odorik testovací hovor spuštěn',
+            leadId,
+            leadPhone: lead.phone,
+            fromNumber: odorikNumber,
+            agentId: activeAgentId,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// GET /api/ai-calls/odorik-config
+//
+// Přidána 'fb' skupina (24.9.2026). Na rozdíl od mobilni/pevna
+// (jeden sdílený phoneNumber + pole sipNames) vrací fb celé pole
+// identit (sipName + vlastní fromNumber pro každou), protože každá
+// FB linka má jiné CLIP.
+// ============================================
+export const getOdorikConfig = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const mobilniSipNames = odorikService.getActiveSipNames('mobilni');
+        const pevnaSipNames = odorikService.getActiveSipNames('pevna');
+        const fbIdentities = odorikService.getIdentitiesForLine('fb');
+
+        res.status(200).json({
+            lines: {
+                mobilni: {
+                    sipNames: mobilniSipNames,
+                    maxWorkers: mobilniSipNames.length,
+                    phoneNumber: odorikService.getPhoneNumberForLine('mobilni') || null,
+                },
+                pevna: {
+                    sipNames: pevnaSipNames,
+                    maxWorkers: pevnaSipNames.length,
+                    phoneNumber: odorikService.getPhoneNumberForLine('pevna') || null,
+                },
+                fb: {
+                    identities: fbIdentities,
+                    maxWorkers: fbIdentities.length,
+                },
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+===== src\aiagent\controllers\batchCalls.controller.ts =====
+
+import { Request, Response, NextFunction } from 'express';
+import pool from '../../db/pool';
+import bcrypt from 'bcrypt';
+
+const DEFAULT_AI_AGENT_ID = '53c65ca7-68bc-4948-83e5-35a64c17f0fb';
+
+const getAgentId = (req: Request): string =>
+    (req.query.agentUserId as string) || DEFAULT_AI_AGENT_ID;
+
+// ⚠️ NOVÉ (18.8.2026) — explicitní seznam UUID AI agentů, místo
+// křehkého filtru podle emailové domény (u.email LIKE 'ai-agent%'),
+// který novým agentům jako Eva Gemini V2 (email
+// eva-gemini-v2@quantum.internal) vůbec nesedí — jejich dávky by se
+// tak z Historie dávek úplně ztratily, i když se v ai_call_logs
+// normálně zapsaly. Až přibude další agent (další Gemini prompt nebo
+// nová OpenAI verze), přidej jeho UUID sem.
+const AI_AGENT_IDS = [
+    '53c65ca7-68bc-4948-83e5-35a64c17f0fb', // Eva V1 (OpenAI)
+    'aeec78ff-a86b-4cab-b33a-adeb7c94f08e', // Eva V2 (OpenAI)
+    'e7a469bb-4783-4f96-b961-03dd503e5bfa', // Eva V3 (OpenAI)
+    'f4adb349-70c3-4e63-8670-81f6c177f61d', // Eva V4 (OpenAI)
+    'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9', // Eva V5 (OpenAI + Gemini)
+    'dab796fa-bf16-4f99-812c-601a031049ce', // Eva Gemini V2
+    // ⚠️ NOVÉ (25.9.2026) — FB agenti chyběli, protože tohle pole
+    // vzniklo dřív, než jsme je vytvořili. Stejný typ chyby, jaký
+    // dřív způsobil, že se ztrácely dávky kvůli email LIKE filtru.
+    '99142508-1483-4ea2-ba9f-c35a9ecdc69f', // Eva FB V6
+    '773db522-8df4-4903-9b4f-019b8b0969b5', // Eva FB V7
+    'a2a7c4f6-1b90-4b64-8899-451dca563c96', // Eva FB V8
+    '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d', // Eva FB V9
+];
+
+// ============================================
+// POST /api/ai-calls/verify-password
+// ============================================
+export const verifyPassword = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { password } = req.body;
+        if (!password) {
+            res.status(400).json({ error: { message: 'Heslo je povinné' } });
+            return;
+        }
+        const result = await pool.query(
+            `SELECT password_hash FROM users WHERE id = $1 AND is_active = true`,
+            [req.user!.id]
+        );
+        if (result.rows.length === 0) {
+            res.status(401).json({ error: { message: 'Uživatel nenalezen' } });
+            return;
+        }
+        const isValid = await bcrypt.compare(password, result.rows[0].password_hash);
+        if (!isValid) {
+            res.status(401).json({ error: { message: 'Nesprávné heslo' } });
+            return;
+        }
+        res.status(200).json({ success: true });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// GET /api/ai-calls/batch-status?agentUserId=
+//
+// ⚠️ NOVÉ (18.8.2026) — přidán hung_up (POLOZIL_TELEFON) do statistik,
+// ať se nový outcome nezapočítává jen do "completed" bez viditelné
+// kategorie.
+// ============================================
+export const getBatchStatus = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const agentId = getAgentId(req);
+
+        const currentResult = await pool.query(
+            `SELECT l.phone, l.company_name
+             FROM leads l
+             WHERE l.ai_call_status = 'calling'
+             AND l.assigned_to = $1
+             LIMIT 1`,
+            [agentId]
+        );
+
+        const statsResult = await pool.query(
+            `SELECT
+                COUNT(*) FILTER (WHERE acl.status = 'completed') AS completed,
+                COUNT(*) FILTER (WHERE acl.outcome = 'CHCE_KONTAKT_AI') AS interested,
+                COUNT(*) FILTER (WHERE acl.outcome = 'NEZVEDL_TELEFON') AS no_answer,
+                COUNT(*) FILTER (WHERE acl.outcome = 'POLOZIL_TELEFON') AS hung_up,
+                COUNT(*) FILTER (WHERE acl.outcome = 'NEKONTAKTOVAT') AS rejected,
+                COUNT(*) FILTER (WHERE acl.outcome = 'ODKLADA') AS callback,
+                ROUND(AVG(acl.duration) FILTER (WHERE acl.duration IS NOT NULL AND acl.duration > 0)) AS avg_duration
+             FROM ai_call_logs acl
+             JOIN leads l ON acl.lead_id = l.id
+             WHERE DATE(acl.created_at AT TIME ZONE 'Europe/Prague') = CURRENT_DATE
+             AND l.assigned_to = $1`,
+            [agentId]
+        );
+
+        const queueResult = await pool.query(
+            `SELECT COUNT(*) AS queue_size
+             FROM leads
+             WHERE status = 'NOVY'
+             AND assigned_to = $1
+             AND (ai_call_status IS NULL OR ai_call_status = 'failed')`,
+            [agentId]
+        );
+
+        const isRunning = currentResult.rows.length > 0;
+        const stats = statsResult.rows[0];
+        const queueSize = parseInt(queueResult.rows[0].queue_size);
+
+        res.status(200).json({
+            isRunning,
+            currentCall: isRunning ? {
+                phone: currentResult.rows[0].phone,
+                companyName: currentResult.rows[0].company_name,
+            } : null,
+            today: {
+                completed: parseInt(stats.completed || 0),
+                interested: parseInt(stats.interested || 0),
+                noAnswer: parseInt(stats.no_answer || 0),
+                hungUp: parseInt(stats.hung_up || 0),
+                rejected: parseInt(stats.rejected || 0),
+                callback: parseInt(stats.callback || 0),
+                avgDuration: parseInt(stats.avg_duration || 0),
+                conversionRate: stats.completed > 0
+                    ? Math.round((stats.interested / stats.completed) * 100)
+                    : 0,
+            },
+            queueSize,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// GET /api/ai-calls/batch-results?date=&agentUserId=
+// ============================================
+export const getBatchResults = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const date = req.query.date as string || new Date().toISOString().split('T')[0];
+        const agentId = getAgentId(req);
+
+        const result = await pool.query(
+            `SELECT
+                l.phone                                                         AS telefon,
+                COALESCE(l.contact_person, '')                                  AS jmeno,
+                COALESCE(l.company_name, '')                                    AS firma,
+                acl.ai_notes                                                    AS poznamka_evy,
+                acl.recording_url                                               AS nahravka,
+                acl.duration                                                    AS delka_sec,
+                TO_CHAR(acl.created_at AT TIME ZONE 'Europe/Prague',
+                        'DD.MM.YYYY HH24:MI')                                   AS datum_hovoru
+             FROM ai_call_logs acl
+             JOIN leads l ON acl.lead_id = l.id
+             WHERE acl.outcome = 'CHCE_KONTAKT_AI'
+             AND DATE(acl.created_at AT TIME ZONE 'Europe/Prague') = $1
+             AND l.assigned_to = $2
+             ORDER BY acl.created_at DESC`,
+            [date, agentId]
+        );
+
+        res.status(200).json({ date, leads: result.rows, total: result.rows.length });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// GET /api/ai-calls/batch-history — všichni agenti, per datum + agent
+//
+// ⚠️ ZMĚNA (18.8.2026): u.email LIKE 'ai-agent%' → l.assigned_to =
+// ANY($1) s explicitním seznamem AI_AGENT_IDS. Přidán hung_up
+// (POLOZIL_TELEFON) do statistik.
+// ============================================
+export const getBatchHistory = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const result = await pool.query(
+            `SELECT
+                DATE(acl.created_at AT TIME ZONE 'Europe/Prague')               AS datum,
+                l.assigned_to                                                    AS agent_id,
+                u.full_name                                                      AS agent_name,
+                COUNT(*)                                                         AS celkem_hovoru,
+                COUNT(*) FILTER (WHERE acl.status = 'completed')                AS completed,
+                COUNT(*) FILTER (WHERE acl.outcome = 'CHCE_KONTAKT_AI')         AS interested,
+                COUNT(*) FILTER (WHERE acl.outcome = 'NEZVEDL_TELEFON')         AS no_answer,
+                COUNT(*) FILTER (WHERE acl.outcome = 'POLOZIL_TELEFON')         AS hung_up,
+                COUNT(*) FILTER (WHERE acl.outcome = 'NEKONTAKTOVAT')           AS rejected,
+                COUNT(*) FILTER (WHERE acl.outcome = 'ODKLADA')                 AS callback,
+                ROUND(AVG(acl.duration) FILTER (WHERE acl.duration IS NOT NULL AND acl.duration > 0)) AS avg_duration,
+                ROUND(
+                    COUNT(*) FILTER (WHERE acl.outcome = 'CHCE_KONTAKT_AI')::numeric /
+                    NULLIF(COUNT(*) FILTER (WHERE acl.status = 'completed'), 0) * 100
+                )                                                                AS conversion_rate
+             FROM ai_call_logs acl
+             JOIN leads l ON acl.lead_id = l.id
+             JOIN users u ON l.assigned_to = u.id
+             WHERE acl.created_at >= NOW() - INTERVAL '30 days'
+             AND l.assigned_to = ANY($1)
+             GROUP BY DATE(acl.created_at AT TIME ZONE 'Europe/Prague'), l.assigned_to, u.full_name
+             ORDER BY datum DESC, celkem_hovoru DESC`,
+            [AI_AGENT_IDS]
+        );
+
+        res.status(200).json({
+            batches: result.rows.map(row => ({
+                datum: row.datum,
+                agentId: row.agent_id,
+                agentName: row.agent_name,
+                celkemHovoru: parseInt(row.celkem_hovoru),
+                completed: parseInt(row.completed),
+                interested: parseInt(row.interested),
+                noAnswer: parseInt(row.no_answer),
+                hungUp: parseInt(row.hung_up),
+                rejected: parseInt(row.rejected),
+                callback: parseInt(row.callback),
+                avgDuration: parseInt(row.avg_duration || 0),
+                conversionRate: parseInt(row.conversion_rate || 0),
+            })),
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// GET /api/ai-calls/twilio-number
+// ============================================
+export const getTwilioNumber = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const phone = process.env.TWILIO_PHONE_NUMBER || 'Není nakonfigurováno';
+        res.status(200).json({ phone });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// GET /api/ai-calls/unanswered?agentUserId=
+// ============================================
+export const getUnanswered = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const agentId = getAgentId(req);
+
+        const result = await pool.query(
+            `SELECT
+                l.id,
+                l.phone,
+                COALESCE(l.company_name, '')    AS company_name,
+                l.status,
+                COUNT(acl.id)                   AS total_attempts,
+                COUNT(acl.recording_url) FILTER (
+                    WHERE acl.recording_url IS NOT NULL AND acl.recording_url != ''
+                )                               AS attempts_with_recording
+             FROM leads l
+             LEFT JOIN ai_call_logs acl ON l.id = acl.lead_id
+             WHERE l.status = 'NEZVEDL_TELEFON' AND l.assigned_to = $1
+             GROUP BY l.id, l.phone, l.company_name, l.status
+             HAVING
+                COUNT(acl.recording_url) FILTER (
+                    WHERE acl.recording_url IS NOT NULL AND acl.recording_url != ''
+                ) = 0
+                AND COUNT(acl.id) < 3
+             ORDER BY l.updated_at DESC`,
+            [agentId]
+        );
+
+        res.status(200).json({
+            leads: result.rows.map(row => ({
+                id: row.id,
+                phone: row.phone,
+                companyName: row.company_name,
+                status: row.status,
+                totalAttempts: parseInt(row.total_attempts),
+                attemptsWithRecording: parseInt(row.attempts_with_recording),
+            })),
+            total: result.rows.length,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// POST /api/ai-calls/retry-unanswered
+//
+// Beze změny — POLOZIL_TELEFON se sem záměrně NEDOPLŇUJE. Na rozdíl
+// od NEZVEDL_TELEFON (kde vůbec nevíme, jestli zákazník telefon
+// zvedl), u POLOZIL_TELEFON víme jistě, že zvedl a hovor se s ním
+// neuzavřel — retry nedává obchodní smysl.
+// ============================================
+export const retryUnanswered = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const agentId = (req.body.agentUserId as string) || DEFAULT_AI_AGENT_ID;
+
+        const eligibleResult = await pool.query(
+            `SELECT l.id
+             FROM leads l
+             LEFT JOIN ai_call_logs acl ON l.id = acl.lead_id
+             WHERE l.status = 'NEZVEDL_TELEFON' AND l.assigned_to = $1
+             GROUP BY l.id
+             HAVING
+                COUNT(acl.recording_url) FILTER (
+                    WHERE acl.recording_url IS NOT NULL AND acl.recording_url != ''
+                ) = 0
+                AND COUNT(acl.id) < 3`,
+            [agentId]
+        );
+
+        const eligibleIds = eligibleResult.rows.map(r => r.id);
+
+        if (eligibleIds.length === 0) {
+            res.status(200).json({ updated: 0, message: 'Žádné leady k opakování' });
+            return;
+        }
+
+        const updateResult = await pool.query(
+            `UPDATE leads
+             SET status = 'NOVY', ai_call_attempts = 0, ai_call_status = NULL, updated_at = NOW()
+             WHERE id = ANY($1) RETURNING id`,
+            [eligibleIds]
+        );
+
+        res.status(200).json({
+            updated: updateResult.rows.length,
+            message: `${updateResult.rows.length} leadů zařazeno zpět do fronty`,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// GET /api/ai-calls/avg-duration
+//
+// ⚠️ POZNÁMKA (18.8.2026) — dnes stále míchá OpenAI a Gemini hovory
+// dohromady (bod 7, řešíme později).
+// ============================================
+export const getAvgDuration = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const result = await pool.query(
+            `SELECT ROUND(AVG(duration))::int AS avg_duration, COUNT(*) AS sample_size
+             FROM ai_call_logs
+             WHERE status = 'completed' AND duration > 0 AND duration < 300
+               AND created_at >= NOW() - INTERVAL '7 days'`
+        );
+
+        const avgDuration = parseInt(result.rows[0].avg_duration) || 25;
+        const overhead = 8;
+
+        res.status(200).json({
+            avgDuration,
+            overhead,
+            totalPerCall: avgDuration + overhead,
+            sampleSize: parseInt(result.rows[0].sample_size) || 0,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// POST /api/ai-calls/reassign-leads
+// ============================================
+export const reassignLeads = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { fromAgentId, toAgentId, count } = req.body;
+
+        if (!fromAgentId || !toAgentId || !count) {
+            res.status(400).json({ error: { message: 'Chybí parametry', statusCode: 400 } });
+            return;
+        }
+        if (fromAgentId === toAgentId) {
+            res.status(400).json({ error: { message: 'Zdrojový a cílový agent musí být různí', statusCode: 400 } });
+            return;
+        }
+        if (count < 1 || count > 10000) {
+            res.status(400).json({ error: { message: 'Počet musí být mezi 1 a 10000', statusCode: 400 } });
+            return;
+        }
+
+        const agentsCheck = await pool.query(
+            `SELECT id, full_name FROM users WHERE id = ANY($1) AND is_active = true`,
+            [[fromAgentId, toAgentId]]
+        );
+
+        if (agentsCheck.rows.length !== 2) {
+            res.status(400).json({ error: { message: 'Jeden nebo oba agenti nenalezeni', statusCode: 400 } });
+            return;
+        }
+
+        const result = await pool.query(
+            `UPDATE leads
+             SET assigned_to = $1, updated_at = NOW()
+             WHERE id IN (
+                 SELECT id FROM leads
+                 WHERE status = 'NOVY'
+                 AND assigned_to = $2
+                 AND (ai_call_status IS NULL OR ai_call_status = 'failed')
+                 ORDER BY created_at ASC
+                 LIMIT $3
+             )
+             RETURNING id`,
+            [toAgentId, fromAgentId, count]
+        );
+
+        const reassigned = result.rows.length;
+        const fromAgent = agentsCheck.rows.find((a: any) => a.id === fromAgentId);
+        const toAgent = agentsCheck.rows.find((a: any) => a.id === toAgentId);
+
+        res.status(200).json({
+            success: true,
+            reassigned,
+            message: `${reassigned} leadů přeřazeno z ${fromAgent?.full_name} na ${toAgent?.full_name}`,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// POST /api/ai-calls/import-leads
+// ============================================
+export const importLeads = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        if (!req.file) {
+            res.status(400).json({ error: { message: 'Soubor nebyl nahrán', statusCode: 400 } });
+            return;
+        }
+
+        const agentId = (req.body.agentUserId as string) || DEFAULT_AI_AGENT_ID;
+
+        const XLSX = require('xlsx');
+        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const rawData = XLSX.utils.sheet_to_json(worksheet, {
+            header: 1, defval: '', blankrows: false,
+        }) as any[][];
+
+        if (rawData.length === 0) {
+            res.status(400).json({ error: { message: 'Soubor je prázdný', statusCode: 400 } });
+            return;
+        }
+
+        const normalizePhone = (raw: any): string | null => {
+            const str = String(raw).replace(/[\s\-\(\)\.]/g, '').trim();
+            if (!str) return null;
+            if (/^\+420\d{9}$/.test(str)) return str;
+            if (/^00420\d{9}$/.test(str)) return `+${str.slice(2)}`;
+            if (/^420\d{9}$/.test(str)) return `+${str}`;
+            if (/^\d{9}$/.test(str)) return `+420${str}`;
+            return null;
+        };
+
+        const phones: string[] = [];
+        const invalid: string[] = [];
+
+        for (let i = 0; i < rawData.length; i++) {
+            const row = rawData[i];
+            const raw = row[0];
+            if (!raw) continue;
+            if (i === 0 && isNaN(Number(String(raw).replace(/[\s\-\(\)\.+]/g, '')))) continue;
+            const normalized = normalizePhone(raw);
+            if (normalized) phones.push(normalized);
+            else invalid.push(String(raw));
+        }
+
+        if (phones.length === 0) {
+            res.status(400).json({
+                error: { message: 'Žádná platná telefonní čísla nebyla nalezena', statusCode: 400 },
+                invalid,
+            });
+            return;
+        }
+
+        const companyNames = phones.map(() => '');
+        const legalForms = phones.map(() => '');
+        const icos = phones.map(() => '');
+        const contactPersons = phones.map(() => '');
+        const emails = phones.map(() => '');
+        const assignedTos = phones.map(() => agentId);
+        const createdBys = phones.map(() => agentId);
+
+        const insertResult = await pool.query(
+            `WITH input_data AS (
+                SELECT
+                    unnest($1::varchar[]) as company_name,
+                    unnest($2::varchar[]) as legal_form,
+                    unnest($3::varchar[]) as ico,
+                    unnest($4::varchar[]) as contact_person,
+                    unnest($5::varchar[]) as phone,
+                    unnest($6::varchar[]) as email,
+                    unnest($7::uuid[]) as assigned_to,
+                    unnest($8::uuid[]) as created_by
+            ),
+            filtered_data AS (
+                SELECT id.* FROM input_data id
+                LEFT JOIN leads l ON l.phone = id.phone
+                WHERE l.phone IS NULL
+            )
+            INSERT INTO leads (
+                company_name, legal_form, ico, contact_person, phone, email,
+                status, invoice_promised, assigned_to, created_by, created_at, updated_at
+            )
+            SELECT company_name, legal_form, ico, contact_person, phone, email,
+                'NOVY'::lead_status, false, assigned_to, created_by, NOW(), NOW()
+            FROM filtered_data
+            RETURNING phone`,
+            [companyNames, legalForms, icos, contactPersons, phones, emails, assignedTos, createdBys]
+        );
+
+        const inserted = insertResult.rows.length;
+        const duplicates = phones.length - inserted;
+
+        res.status(200).json({
+            success: true,
+            summary: { total: phones.length, inserted, duplicates, invalid: invalid.length },
+            invalidNumbers: invalid.slice(0, 50),
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// PATCH /api/ai-calls/leads/:id/blacklist
+// ============================================
+export const blacklistLead = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { id } = req.params;
+
+        const leadResult = await pool.query(`SELECT id, phone, status FROM leads WHERE id = $1`, [id]);
+        if (leadResult.rows.length === 0) {
+            res.status(404).json({ error: { message: 'Lead nenalezen', statusCode: 404 } });
+            return;
+        }
+
+        const lead = leadResult.rows[0];
+        const oldStatus = lead.status;
+
+        await pool.query(`UPDATE leads SET status = 'NEKONTAKTOVAT', updated_at = NOW() WHERE id = $1`, [id]);
+
+        await pool.query(
+            `INSERT INTO lead_comments (lead_id, user_id, old_status, new_status, comment)
+             VALUES ($1, $2, $3, 'NEKONTAKTOVAT', '🚫 Přidáno na blacklist přes CRM')`,
+            [id, req.user?.id || DEFAULT_AI_AGENT_ID, oldStatus]
+        );
+
+        res.status(200).json({ message: 'Lead přidán na blacklist', phone: lead.phone });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ============================================
+// POST /api/ai-calls/delete-leads
+// ============================================
+export const deleteLeads = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+        const { agentId, count } = req.body;
+
+        if (!agentId || !count) {
+            res.status(400).json({ error: { message: 'Chybí parametry: agentId, count', statusCode: 400 } });
+            return;
+        }
+
+        if (count < 1 || count > 10000) {
+            res.status(400).json({ error: { message: 'Počet musí být mezi 1 a 10000', statusCode: 400 } });
+            return;
+        }
+
+        const agentCheck = await pool.query(
+            `SELECT id, full_name FROM users WHERE id = $1 AND is_active = true`,
+            [agentId]
+        );
+
+        if (agentCheck.rows.length === 0) {
+            res.status(400).json({ error: { message: 'Agent nenalezen', statusCode: 400 } });
+            return;
+        }
+
+        const countResult = await pool.query(
+            `SELECT COUNT(*) AS total FROM leads
+             WHERE status = 'NOVY'
+             AND assigned_to = $1
+             AND (ai_call_status IS NULL OR ai_call_status = 'failed')`,
+            [agentId]
+        );
+
+        const available = parseInt(countResult.rows[0].total);
+        const toDelete = Math.min(count, available);
+
+        if (toDelete === 0) {
+            res.status(200).json({ deleted: 0, message: 'Žádné NOVY leady k mazání' });
+            return;
+        }
+
+        const result = await pool.query(
+            `DELETE FROM leads
+             WHERE id IN (
+                 SELECT id FROM leads
+                 WHERE status = 'NOVY'
+                 AND assigned_to = $1
+                 AND (ai_call_status IS NULL OR ai_call_status = 'failed')
+                 ORDER BY created_at ASC
+                 LIMIT $2
+             )
+             RETURNING id`,
+            [agentId, toDelete]
+        );
+
+        const deleted = result.rows.length;
+
+        res.status(200).json({
+            success: true,
+            deleted,
+            message: `${deleted} leadů smazáno (agent: ${agentCheck.rows[0].full_name})`,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+===== src\aiagent\routes\aiCalls.routes.ts =====
+
+import { Router } from 'express';
+import {
+    startAICalling, stopAICalling, getAICallStatus,
+    getAICallLogs, getAICallLogDetail,
+    getTwiML, handleStatusCallback, handleRecordingCallback,
+    startOdorikTestCall, getOdorikConfig
+} from '../controllers/aiCalls.controller';
+import { authenticate } from '../../middleware/authenticate';
+import { authorize } from '../../middleware/authorize';
+
+const router = Router();
+
+// Admin routes
+// Sjednocený /start endpoint — přijímá provider ('twilio'|'odorik'),..
+// engine ('openai'|'gemini') a odorikLine ('mobilni'|'pevna', relevantní
+// jen pro provider='odorik') v body.
+router.post('/start', authenticate, authorize(['ADMIN']), startAICalling);
+router.post('/stop', authenticate, authorize(['ADMIN']), stopAICalling);
+router.get('/status', authenticate, authorize(['ADMIN']), getAICallStatus);
+router.get('/logs', authenticate, authorize(['ADMIN']), getAICallLogs);
+router.get('/logs/:id', authenticate, authorize(['ADMIN']), getAICallLogDetail);
+
+// Twilio webhooks (public)
+router.post('/webhook/twiml', getTwiML);
+router.post('/webhook/status-callback', handleStatusCallback);
+router.post('/webhook/recording-callback', handleRecordingCallback);
+
+router.post('/test-odorik', authenticate, authorize(['ADMIN']), startOdorikTestCall);
+
+// Odorik konfigurace pro frontend (aktivní SIP jména + maxWorkers pro
+// obě linky — mobilní 790766 i pevná 793305)
+router.get('/odorik-config', authenticate, authorize(['ADMIN']), getOdorikConfig);
+
+export default router;
+
+===== src\aiagent\routes\batchCalls.routes.ts =====
+
+import { Router } from 'express';
+import multer from 'multer';
+import {
+    getBatchStatus,
+    getBatchResults,
+    getBatchHistory,
+    getTwilioNumber,
+    getUnanswered,
+    retryUnanswered,
+    blacklistLead,
+    getAvgDuration,
+    importLeads,
+    verifyPassword,
+    reassignLeads,
+    deleteLeads,
+} from '../controllers/batchCalls.controller';
+import { authenticate } from '../../middleware/authenticate';
+import { authorize } from '../../middleware/authorize';
+
+const router = Router();
+
+const upload = multer({
+    storage: multer.memoryStorage(),
+    fileFilter: (_req, file, cb) => {
+        const allowed = [
+            'application/vnd.ms-excel',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.ms-excel.sheet.macroEnabled.12',
+        ];
+        if (allowed.includes(file.mimetype)) cb(null, true);
+        else cb(new Error('Pouze Excel soubory jsou povoleny'));
+    },
+    limits: { fileSize: 50 * 1024 * 1024 },
+});
+
+router.use(authenticate, authorize(['ADMIN']));
+
+router.get('/batch-status', getBatchStatus);
+router.get('/batch-results', getBatchResults);
+router.get('/batch-history', getBatchHistory);
+router.get('/twilio-number', getTwilioNumber);
+router.get('/unanswered', getUnanswered);
+router.post('/retry-unanswered', retryUnanswered);
+router.get('/avg-duration', getAvgDuration);
+router.post('/import-leads', upload.single('file'), importLeads);
+router.post('/verify-password', verifyPassword);
+router.post('/reassign-leads', reassignLeads);
+router.post('/delete-leads', deleteLeads);
+
+router.patch('/leads/:id/blacklist', blacklistLead);
+
+export default router;

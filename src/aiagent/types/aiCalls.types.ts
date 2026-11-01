@@ -15,7 +15,11 @@ export type AICallOutcome =
 
 // NOVÉ — dvě nezávislé osy, defaultně přesně dnešní chování
 export type CallEngine = 'openai' | 'gemini';
-export type CallProvider = 'twilio' | 'odorik';
+
+// ⚠️ NOVÉ (1.11.2026) — 'asterisk' = vlastní ústředna (Hetzner) + Odorik.
+// Backend hovory nevolá, jen zapíše úkol do tabulky batch_jobs; ústředna
+// (služba ustredna-worker) ho převezme. Jen engine 'gemini', rotující mód.
+export type CallProvider = 'twilio' | 'odorik' | 'asterisk';
 
 // ⚠️ NOVÉ — dvě Odorik linky, liší se CLIP a sadou SIP jmen, sdílejí
 // stejný Twilio BYOC trunk. 'mobilni' = 790766 (výchozí, zachovává

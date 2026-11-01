@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
     getBatchStatus, getTwilioNumber, getAvgDuration, getOdorikConfig,
-    startAICalling, BatchStatus, AvgDuration, OdorikConfig, CallProvider, CallEngine, OdorikLine, CallMode,
+    startAICalling, stopAICalling, BatchStatus, AvgDuration, OdorikConfig, CallProvider, CallEngine, OdorikLine, CallMode,
 } from '../api';
 
 type CallingStep = 'setup' | 'reauth' | 'calling' | 'done';
@@ -154,11 +154,17 @@ const Calling: React.FC = () => {
     const [reauthLoading, setReauthLoading] = useState(false);
     const [startedAt, setStartedAt] = useState<Date | null>(null);
     const [error, setError] = useState('');
+    const [stopConfirm, setStopConfirm] = useState(false);
+    const [stopping, setStopping] = useState(false);
+    const [stopError, setStopError] = useState('');
 
     const pollRef = useRef<NodeJS.Timeout | null>(null);
 
-    const availableAgents = AGENTS.filter(a => a.engines.includes(engine));
     const isFbSelected = selectedAgent.isFacebookAgent === true;
+    // Asterisk + Odorik = vlastní ústředna: jen Gemini, sekvenční rotace (FB agenti zatím ne)
+    const isAsterisk = provider === 'asterisk' && !isFbSelected;
+    const sequential = isFbSelected || isAsterisk;
+    const availableAgents = AGENTS.filter(a => a.engines.includes(engine) && !(provider === 'asterisk' && a.isFacebookAgent));
 
     const handleEngineChange = (newEngine: CallEngine) => {
         setEngine(newEngine);
@@ -174,6 +180,20 @@ const Calling: React.FC = () => {
         const stillCompatible = AGENTS.filter(a => a.engines.includes(newEngine));
         if (!stillCompatible.find(a => a.id === selectedAgent.id)) {
             setSelectedAgent(stillCompatible[0]);
+        }
+    };
+
+    const handleProviderChange = (newProvider: CallProvider) => {
+        setProvider(newProvider);
+        if (newProvider === 'asterisk') {
+            setCallMode('rotating');
+            setEngine('gemini');
+            if (!selectedAgent.engines.includes('gemini')) {
+                const preferred = AGENTS.find(a => a.id === GEMINI_DEFAULT_AGENT_ID);
+                if (preferred) setSelectedAgent(preferred);
+            }
+        } else {
+            setCallMode('parallel');
         }
     };
 
@@ -218,11 +238,15 @@ const Calling: React.FC = () => {
 
     const maxWorkersAvailable = provider === 'twilio'
         ? TWILIO_MAX_WORKERS
-        : (standardOdorikLineConfig?.maxWorkers ?? 0);
+        : provider === 'asterisk'
+            ? 1
+            : (standardOdorikLineConfig?.maxWorkers ?? 0);
 
     const workerLabels: string[] = provider === 'twilio'
         ? TWILIO_WORKER_PHONES
-        : (standardOdorikLineConfig?.sipNames ?? []);
+        : provider === 'asterisk'
+            ? []
+            : (standardOdorikLineConfig?.sipNames ?? []);
 
     const odorikUnavailable = provider === 'odorik' && !isFbSelected && odorikConfig !== null && maxWorkersAvailable === 0;
 
@@ -287,7 +311,7 @@ const Calling: React.FC = () => {
 
     const remainingTime = (): string => {
         if (!batchStatus || !avgDuration) return '—';
-        const effectiveWorkers = isFbSelected ? 1 : workers;
+        const effectiveWorkers = sequential ? 1 : workers;
         const callsPerWorker = Math.ceil(batchStatus.queueSize / effectiveWorkers);
         const totalSeconds = callsPerWorker * avgDuration.totalPerCall;
         const hours = Math.floor(totalSeconds / 3600);
@@ -335,7 +359,10 @@ const Calling: React.FC = () => {
                 return;
             }
 
-            await startAICalling(maxCalls, selectedAgent.id, workers, provider, engine, odorikLine, callMode);
+            await startAICalling(maxCalls, selectedAgent.id, isAsterisk ? 1 : workers, provider, engine, odorikLine, isAsterisk ? 'rotating' : callMode);
+            setStopConfirm(false);
+            setStopping(false);
+            setStopError('');
 
             const status = await getBatchStatus(selectedAgent.id);
             setBatchStatus(status);
@@ -354,6 +381,21 @@ const Calling: React.FC = () => {
         return m > 0 ? `${m}m ${s}s` : `${s}s`;
     };
 
+    const handleStop = async () => {
+        if (!stopConfirm) {
+            setStopConfirm(true);
+            return;
+        }
+        setStopConfirm(false);
+        setStopError('');
+        try {
+            await stopAICalling(selectedAgent.id);
+            setStopping(true);
+        } catch (err: any) {
+            setStopError(err.message || 'Zastavení se nezdařilo');
+        }
+    };
+
     const handleReset = () => {
         setStep('setup');
         setPassword('');
@@ -361,6 +403,9 @@ const Calling: React.FC = () => {
         setError('');
         setBatchStatus(null);
         setStartedAt(null);
+        setStopConfirm(false);
+        setStopping(false);
+        setStopError('');
         if (pollRef.current) clearInterval(pollRef.current);
         loadMeta(selectedAgent.id);
     };
@@ -393,6 +438,8 @@ const Calling: React.FC = () => {
                                             type="button"
                                             className={`btn ${engine === eng ? 'btn-primary' : 'btn-outline'}`}
                                             onClick={() => handleEngineChange(eng)}
+                                            disabled={isAsterisk && eng === 'openai'}
+                                            title={isAsterisk && eng === 'openai' ? 'Asterisk + Odorik podporuje jen Gemini' : undefined}
                                         >
                                             {ENGINE_LABELS[eng].icon} {ENGINE_LABELS[eng].label}
                                         </button>
@@ -401,6 +448,11 @@ const Calling: React.FC = () => {
                                 {engine === 'gemini' && (
                                     <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
                                         ℹ️ Gemini je dostupné pro Eva V1, Eva Gemini V2, Eva V5 a FB skripty V6–V9.
+                                    </div>
+                                )}
+                                {isAsterisk && (
+                                    <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
+                                        ℹ️ Vlastní ústředna (Asterisk + Odorik) podporuje jen Gemini. FB skripty V6–V9 zatím jedou jen přes Odorik.
                                     </div>
                                 )}
                             </div>
@@ -454,20 +506,27 @@ const Calling: React.FC = () => {
                             {!isFbSelected && (
                                 <div className="form-group">
                                     <label className="form-label">Poskytovatel volání</label>
-                                    <div style={{ display: 'flex', gap: 8 }}>
+                                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                                         <button
                                             type="button"
                                             className={`btn ${provider === 'twilio' ? 'btn-primary' : 'btn-outline'}`}
-                                            onClick={() => setProvider('twilio')}
+                                            onClick={() => handleProviderChange('twilio')}
                                         >
                                             ☎️ Twilio (pevná linka)
                                         </button>
                                         <button
                                             type="button"
                                             className={`btn ${provider === 'odorik' ? 'btn-primary' : 'btn-outline'}`}
-                                            onClick={() => setProvider('odorik')}
+                                            onClick={() => handleProviderChange('odorik')}
                                         >
                                             📱 Odorik (mobilní)
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className={`btn ${provider === 'asterisk' ? 'btn-primary' : 'btn-outline'}`}
+                                            onClick={() => handleProviderChange('asterisk')}
+                                        >
+                                            🛰 Asterisk + Odorik
                                         </button>
                                     </div>
                                 </div>
@@ -510,6 +569,23 @@ const Calling: React.FC = () => {
                                 </div>
                             )}
 
+                            {isAsterisk && (
+                                <div className="form-group">
+                                    <label className="form-label">Volací mód</label>
+                                    <div style={{
+                                        display: 'inline-flex', alignItems: 'center', gap: 8,
+                                        padding: '6px 14px', borderRadius: 20, fontSize: 13, fontWeight: 600,
+                                        background: '#dbeafe', color: '#1d4ed8', border: '1px solid #93c5fd',
+                                    }}>
+                                        🛰 Rotující — linky na vlastní ústředně se střídají
+                                    </div>
+                                    <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 8 }}>
+                                        Hovory jdou přes vlastní ústřednu (Asterisk) a Odorik, striktně jeden po druhém,
+                                        s 10–18s pauzou mezi nimi. Dávku lze zastavit tlačítkem Stop (rozběhnutý hovor doběhne).
+                                    </div>
+                                </div>
+                            )}
+
                             {isFbSelected && (
                                 <div className="form-group">
                                     <label className="form-label">Volací mód</label>
@@ -541,7 +617,7 @@ const Calling: React.FC = () => {
                                 </div>
                             )}
 
-                            {!isFbSelected && (
+                            {!sequential && (
                                 <div className="form-group">
                                     <label className="form-label">
                                         Počet workerů (paralelní volání)
@@ -604,9 +680,9 @@ const Calling: React.FC = () => {
                                 <div className="alert alert-info">
                                     <div>
                                         <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                                            ⏱ Odhadovaný čas: {estimateTime(maxCalls, isFbSelected ? 1 : workers)}
-                                            {!isFbSelected && workers > 1 && <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 8, color: 'var(--primary)' }}>({workers}× rychleji)</span>}
-                                            {isFbSelected && <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 8, color: 'var(--gray-500)' }}>(sekvenční, rotující)</span>}
+                                            ⏱ Odhadovaný čas: {estimateTime(maxCalls, sequential ? 1 : workers)}
+                                            {!sequential && workers > 1 && <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 8, color: 'var(--primary)' }}>({workers}× rychleji)</span>}
+                                            {sequential && <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 8, color: 'var(--gray-500)' }}>(sekvenční, rotující)</span>}
                                         </div>
                                         <div style={{ fontSize: 12 }}>
                                             Průměrný hovor: {formatDuration(avgDuration.avgDuration)} + {avgDuration.overhead}s overhead
@@ -646,7 +722,7 @@ const Calling: React.FC = () => {
                                         </>
                                     ) : (
                                         <>
-                                            Poskytovatel: <strong>{provider === 'twilio' ? '☎️ Twilio (pevná linka)' : `📱 Odorik (${ODORIK_LINE_LABELS[odorikLine].label})`}</strong><br />
+                                            Poskytovatel: <strong>{provider === 'twilio' ? '☎️ Twilio (pevná linka)' : provider === 'asterisk' ? '🛰 Asterisk + Odorik (vlastní ústředna, rotující)' : `📱 Odorik (${ODORIK_LINE_LABELS[odorikLine].label})`}</strong><br />
                                             {provider === 'odorik' && (odorikLine === 'mobilni' || odorikLine === 'pevna') && (
                                                 <>
                                                     Zákazník uvidí: <strong style={{ fontFamily: 'monospace' }}>{ODORIK_LINE_DISPLAY_CLIP[odorikLine]}</strong><br />
@@ -657,10 +733,10 @@ const Calling: React.FC = () => {
                                     Engine: <strong>{ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label}</strong><br />
                                     Agent: <strong>{selectedAgent.name}</strong> — {selectedAgent.description}<br />
                                     Počet hovorů: <strong>{maxCalls.toLocaleString('cs-CZ')}</strong><br />
-                                    {!isFbSelected && (
+                                    {!sequential && (
                                         <>Workeři: <strong>{workers}×</strong> <span style={{ fontFamily: 'monospace', fontSize: 12 }}>({workerLabels.slice(0, workers).join(', ')})</span><br /></>
                                     )}
-                                    Odhadovaný čas: <strong>{estimateTime(maxCalls, isFbSelected ? 1 : workers)}</strong><br /><br />
+                                    Odhadovaný čas: <strong>{estimateTime(maxCalls, sequential ? 1 : workers)}</strong><br /><br />
                                     Pro potvrzení zadej své heslo.
                                 </div>
                             </div>
@@ -673,7 +749,7 @@ const Calling: React.FC = () => {
                                 <div style={{ display: 'flex', gap: 10 }}>
                                     <button type="button" className="btn btn-outline" onClick={() => setStep('setup')} disabled={reauthLoading}>← Zpět</button>
                                     <button type="submit" className="btn btn-success btn-lg" style={{ flex: 1 }} disabled={reauthLoading || !password}>
-                                        {reauthLoading ? <><span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Spouštím...</> : `🚀 Spustit ${selectedAgent.name}${!isFbSelected ? ` (${workers} worker${workers > 1 ? 'y' : ''})` : ''}`}
+                                        {reauthLoading ? <><span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Spouštím...</> : `🚀 Spustit ${selectedAgent.name}${!sequential ? ` (${workers} worker${workers > 1 ? 'y' : ''})` : ''}`}
                                     </button>
                                 </div>
                             </form>
@@ -685,7 +761,7 @@ const Calling: React.FC = () => {
             {step === 'calling' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div style={{ background: 'var(--primary-light)', border: '1px solid #bfdbfe', borderRadius: 'var(--radius)', padding: '8px 14px', fontSize: 13, color: 'var(--primary)', fontWeight: 600, marginBottom: 12 }}>
-                        🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {isFbSelected ? '📘 FB rotující' : (provider === 'twilio' ? '☎️ Twilio' : `📱 Odorik ${ODORIK_LINE_LABELS[odorikLine].label}`)} · {isFbSelected ? 'sekvenční' : `${workers} worker${workers > 1 ? 'y' : ''}`} · „{displayedPitch.slice(0, 55)}..."
+                        🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {isFbSelected ? '📘 FB rotující' : (provider === 'twilio' ? '☎️ Twilio' : provider === 'asterisk' ? '🛰 Asterisk + Odorik' : `📱 Odorik ${ODORIK_LINE_LABELS[odorikLine].label}`)} · {sequential ? 'sekvenční' : `${workers} worker${workers > 1 ? 'y' : ''}`} · „{displayedPitch.slice(0, 55)}..."
                     </div>
                     <div className="live-feed mb-16">
                         <span className="live-dot" />
@@ -718,13 +794,30 @@ const Calling: React.FC = () => {
                         <div className="stat-card"><div className="stat-label">Prům. délka</div><div className="stat-value">{batchStatus.today.avgDuration > 0 ? formatDuration(batchStatus.today.avgDuration) : '—'}</div></div>
                     </div>
                     <div className="alert alert-info">💡 Stránka se automaticky aktualizuje každé 3 sekundy. Nezavírej okno prohlížeče.</div>
+                    {isAsterisk && (
+                        <div style={{ marginTop: 16 }}>
+                            {stopping ? (
+                                <div className="alert alert-warning">🛑 Zastavuji… právě rozběhnutý hovor ještě doběhne, pak se dávka ukončí.</div>
+                            ) : (
+                                <div style={{ display: 'flex', gap: 10 }}>
+                                    <button type="button" className={`btn ${stopConfirm ? 'btn-danger' : 'btn-outline'}`} onClick={handleStop}>
+                                        {stopConfirm ? '⚠️ Opravdu zastavit? Klikni znovu' : '🛑 Zastavit dávku'}
+                                    </button>
+                                    {stopConfirm && (
+                                        <button type="button" className="btn btn-outline" onClick={() => setStopConfirm(false)}>✕ Zrušit</button>
+                                    )}
+                                </div>
+                            )}
+                            {stopError && <div className="alert alert-danger mt-8">⚠️ {stopError}</div>}
+                        </div>
+                    )}
                 </div>
             )}
 
             {step === 'done' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div className="alert alert-success mb-24" style={{ fontSize: 16 }}>
-                        🎉 Dávka dokončena! Agent: <strong>{selectedAgent.name}</strong> · Engine: <strong>{ENGINE_LABELS[engine].label}</strong>
+                        {stopping ? '🛑 Dávka zastavena.' : '🎉 Dávka dokončena!'} Agent: <strong>{selectedAgent.name}</strong> · Engine: <strong>{ENGINE_LABELS[engine].label}</strong>
                         {startedAt && <span style={{ marginLeft: 8, fontSize: 13, opacity: 0.8 }}>· Spuštěno: {startedAt.toLocaleTimeString('cs-CZ')}</span>}
                     </div>
                     <div className="stats-grid mb-24">

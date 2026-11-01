@@ -37,7 +37,9 @@ const getWorkerPhoneNumbers = (): string[] => {
 // POST /api/ai-calls/start
 //
 // Čtyři nezávislé osy:
-//   provider: 'twilio' | 'odorik'  (default 'twilio')
+//   provider: 'twilio' | 'odorik' | 'asterisk'  (default 'twilio')
+//             'asterisk' = vlastní ústředna (Hetzner) + Odorik — backend
+//             hovory nevolá, jen zapíše úkol do batch_jobs (NOVÉ 1.11.2026)
 //   engine:   'openai' | 'gemini'  (default 'openai')
 //   odorikLine: 'mobilni' | 'pevna' | 'fb' (default 'mobilni') —
 //               relevantní jen když provider='odorik'
@@ -63,7 +65,7 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
 
         const activeAgentId = agentUserId || process.env.AI_AGENT_USER_ID || DEFAULT_AI_AGENT_ID;
 
-        const validProviders = ['twilio', 'odorik'];
+        const validProviders = ['twilio', 'odorik', 'asterisk'];
         const activeProvider = (validProviders.includes(provider as string) ? provider : 'twilio') as CallProvider;
 
         const validEngines = ['openai', 'gemini'];
@@ -108,6 +110,52 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
         }
 
         if (leads.length === 0) throw new BadRequestError('Žádné leady k volání');
+
+        // ============================================
+        // ASTERISK + ODORIK (NOVÉ, 1.11.2026)
+        // Hovory nevolá tento backend. Zapíšeme úkol do batch_jobs a vlastní
+        // ústředna (Hetzner, služba ustredna-worker) si ho do ~3 s převezme,
+        // vytáčí leady jeden po druhém a zapisuje výsledky do stejné DB.
+        // Stav pro UI se čte z DB jako dosud (getBatchStatus).
+        // Skupinu linek (pool / fb) určuje worker podle agenta.
+        // ============================================
+        if (activeProvider === 'asterisk') {
+            if (activeEngine !== 'gemini') {
+                throw new BadRequestError('Asterisk + Odorik podporuje pouze engine="gemini"');
+            }
+
+            // Worker bere jeden úkol najednou → druhou dávku nepřijmeme.
+            const busyJob = await pool.query(
+                `SELECT id FROM batch_jobs WHERE status IN ('pending', 'running') LIMIT 1`
+            );
+            if (busyJob.rows.length > 0) {
+                throw new BadRequestError('Na ústředně už běží nebo čeká jiná dávka. Počkej na dokončení, nebo ji zastav.');
+            }
+
+            const leadIdList: string[] = leads.map((l: any) => l.id);
+
+            const jobResult = await pool.query(
+                `INSERT INTO batch_jobs (agent_user_id, requested_by, status, lead_ids, max_calls, queued_leads)
+                 VALUES ($1, $2, 'pending', $3::uuid[], $4, $5)
+                 RETURNING id`,
+                [activeAgentId, req.user!.id, leadIdList, leadIdList.length, leadIdList.length]
+            );
+
+            console.log(`🛰 Asterisk job ${jobResult.rows[0].id} zařazen: ${leadIdList.length} leadů, agent ${activeAgentId}`);
+
+            res.status(200).json({
+                success: true,
+                message: `Dávka předána ústředně (Asterisk + Odorik): ${leadIdList.length} leadů, rotující, engine=gemini`,
+                queuedLeads: leadIdList.length,
+                aiAgentId: activeAgentId,
+                agentName: agentCheck.rows[0].full_name,
+                callMode: 'rotating',
+                provider: activeProvider,
+                engine: activeEngine,
+                jobId: jobResult.rows[0].id,
+            } as StartAICallingResponse & Record<string, any>);
+            return;
+        }
 
         // ============================================
         // ROTATING MÓD (24.9.2026)
@@ -257,10 +305,36 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
 export const stopAICalling = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         console.log('🛑 AI Calling stop requested by:', req.user?.fullName);
+
+        // NOVÉ (1.11.2026): zastavení dávky přes ústřednu (provider 'asterisk').
+        // Čekající úkol se zruší, běžící dostane stop_requested (worker ho
+        // zkontroluje před každým dalším leadem; rozběhnutý hovor doběhne).
+        // Twilio/Odorik dávky se zastavit nedají (beze změny).
+        const agentUserId = (req.body?.agentUserId as string) || null;
+
+        const cancelled = await pool.query(
+            `UPDATE batch_jobs
+             SET status = 'stopped', finished_at = NOW()
+             WHERE status = 'pending' AND ($1::uuid IS NULL OR agent_user_id = $1::uuid)
+             RETURNING id`,
+            [agentUserId]
+        );
+        const stopping = await pool.query(
+            `UPDATE batch_jobs
+             SET stop_requested = true
+             WHERE status = 'running' AND ($1::uuid IS NULL OR agent_user_id = $1::uuid)
+             RETURNING id`,
+            [agentUserId]
+        );
+
+        const total = cancelled.rows.length + stopping.rows.length;
+
         res.status(200).json({
             success: true,
-            message: 'Stop not yet implemented - calls will complete naturally',
-            stoppedCalls: 0,
+            message: total > 0
+                ? `Zastavuji dávku na ústředně (běžící: ${stopping.rows.length}, čekající zrušeno: ${cancelled.rows.length}). Rozběhnutý hovor ještě doběhne.`
+                : 'Nic ke zastavení — na ústředně neběží žádná dávka (Twilio/Odorik dávky se zastavit nedají, doběhnou samy)',
+            stoppedCalls: total,
         } as StopAICallingResponse);
     } catch (error) {
         next(error);

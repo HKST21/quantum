@@ -140,7 +140,9 @@ export interface OdorikConfig {
     };
 }
 
-export type CallProvider = 'twilio' | 'odorik';
+// 'asterisk' = vlastní ústředna (Hetzner) + Odorik. Hovory nevolá backend,
+// jen zapíše úkol do tabulky batch_jobs (viz aiCalls.controller.ts).
+export type CallProvider = 'twilio' | 'odorik' | 'asterisk';
 export type CallEngine = 'openai' | 'gemini';
 export type OdorikLine = 'mobilni' | 'pevna' | 'fb';
 
@@ -194,6 +196,14 @@ export const startAICalling = (
     fetchJson('/ai-calls/start', {
         method: 'POST',
         body: JSON.stringify({ maxCalls, agentUserId, workers, provider, engine, odorikLine, callMode }),
+    });
+
+// Zastavení dávky přes ústřednu (provider 'asterisk'). Rozběhnutý hovor
+// doběhne, další se už nevytočí. Pro Twilio/Odorik dávky nic nedělá.
+export const stopAICalling = (agentUserId?: string): Promise<{ success: boolean; message: string; stoppedCalls: number }> =>
+    fetchJson('/ai-calls/stop', {
+        method: 'POST',
+        body: JSON.stringify({ agentUserId }),
     });
 
 export const getAgents = (): Promise<{ users: Agent[] }> =>

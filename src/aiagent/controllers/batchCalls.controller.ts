@@ -104,13 +104,30 @@ export const getBatchStatus = async (req: Request, res: Response, next: NextFunc
             [agentId]
         );
 
-        const isRunning = currentResult.rows.length > 0;
+        // NOVÉ (1.11.2026): dávka přes ústřednu (Asterisk) je "běžící" i dřív,
+        // než worker vezme úkol, a v pauzách mezi hovory (10–18 s), kdy žádný
+        // lead nemá ai_call_status='calling'. Proto se bere v úvahu i úkol
+        // v batch_jobs. Pro Twilio/Odorik dávky (žádné úkoly) se nic nemění.
+        let hasActiveJob = false;
+        try {
+            const jobResult = await pool.query(
+                `SELECT 1 FROM batch_jobs
+                 WHERE agent_user_id = $1 AND status IN ('pending', 'running')
+                 LIMIT 1`,
+                [agentId]
+            );
+            hasActiveJob = jobResult.rows.length > 0;
+        } catch (jobErr) {
+            console.error('⚠️ batch_jobs lookup failed (ignoruji):', jobErr);
+        }
+
+        const isRunning = currentResult.rows.length > 0 || hasActiveJob;
         const stats = statsResult.rows[0];
         const queueSize = parseInt(queueResult.rows[0].queue_size);
 
         res.status(200).json({
             isRunning,
-            currentCall: isRunning ? {
+            currentCall: currentResult.rows.length > 0 ? {
                 phone: currentResult.rows[0].phone,
                 companyName: currentResult.rows[0].company_name,
             } : null,
