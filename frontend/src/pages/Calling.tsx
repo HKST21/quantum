@@ -50,7 +50,7 @@ const AGENTS: AgentOption[] = [
         id: '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d',
         name: 'Eva FB V9',
         description: 'FB leady — telefon za 1 Kč (info)',
-        pitch: 'Krásný den, volám jako AI z T-Mobile partner. Poslední šance telefonů za jednu korunu, chcete od nás nezávazně více informací?',
+        pitch: 'Krásný den, volám jako AI z T-Mobile partner. Poslední šance získat nadupané mobily za jednu korunu od T-Mobile, chcete od nás nezávazně více informací?',
         successLine: 'Skvěle! Brzy Vám poskytneme více informací. Hezký den!',
         engines: ['gemini'],
         isFacebookAgent: true,
