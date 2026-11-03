@@ -111,10 +111,11 @@ const Calling: React.FC = () => {
     const pollRef = useRef<NodeJS.Timeout | null>(null);
 
     const isFbSelected = selectedAgent.isFacebookAgent === true;
-    // Asterisk + Odorik = vlastní ústředna: jen Gemini, sekvenční rotace (FB agenti zatím ne)
-    const isAsterisk = provider === 'asterisk' && !isFbSelected;
+    // Asterisk + Odorik = vlastní ústředna: jen Gemini, sekvenční rotace (od 3.11.2026 i pro FB agenta —
+    // FB linky a jejich CLIP si bere worker na ústředně z vlastního .env)
+    const isAsterisk = provider === 'asterisk';
     const sequential = isFbSelected || isAsterisk;
-    const availableAgents = AGENTS.filter(a => a.engines.includes(engine) && !(provider === 'asterisk' && a.isFacebookAgent));
+    const availableAgents = AGENTS.filter(a => a.engines.includes(engine));
 
     const handleEngineChange = (newEngine: CallEngine) => {
         setEngine(newEngine);
@@ -147,9 +148,17 @@ const Calling: React.FC = () => {
         }
     };
 
+    // FB agent: výchozí je dosavadní cesta (Odorik z Renderu); pokud už je zvolená ústředna, zůstane.
+    const handleFbRouteChange = (route: 'odorik' | 'asterisk') => {
+        setProvider(route);
+        setOdorikLine('fb');
+        setCallMode('rotating');
+        setEngine('gemini');
+    };
+
     useEffect(() => {
         if (isFbSelected) {
-            setProvider('odorik');
+            setProvider((p) => (p === 'asterisk' ? 'asterisk' : 'odorik'));
             setOdorikLine('fb');
             setCallMode('rotating');
         } else if (odorikLine === 'fb') {
@@ -184,7 +193,7 @@ const Calling: React.FC = () => {
 
     const fbConfig = odorikConfig?.lines?.fb;
     const fbIdentityCount = fbConfig?.identities?.length ?? 0;
-    const fbUnavailable = isFbSelected && odorikConfig !== null && fbIdentityCount === 0;
+    const fbUnavailable = isFbSelected && !isAsterisk && odorikConfig !== null && fbIdentityCount === 0;
 
     const maxWorkersAvailable = provider === 'twilio'
         ? TWILIO_MAX_WORKERS
@@ -405,7 +414,7 @@ const Calling: React.FC = () => {
                                 )}
                                 {isAsterisk && (
                                     <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
-                                        ℹ️ Vlastní ústředna (Asterisk + Odorik) podporuje jen Gemini. Eva FB V9 zatím jede jen přes Odorik.
+                                        ℹ️ Vlastní ústředna (Asterisk + Odorik) podporuje jen Gemini.
                                     </div>
                                 )}
                             </div>
@@ -425,8 +434,31 @@ const Calling: React.FC = () => {
                                 <div className="alert alert-info mb-16" style={{ borderColor: '#7c3aed' }}>
                                     <div>
                                         📘 <strong>Facebook leady</strong> — tenhle agent volá VÝHRADNĚ přes dedikovaných
-                                        7 Odorik linek v rotujícím módu. Poskytovatel a linka jsou uzamčené, výběr
-                                        Twilia/mobilní/pevné linky je pro tenhle agent skrytý.
+                                        7 Odorik linek v rotujícím módu. Linka je uzamčená, výběr
+                                        Twilia/mobilní/pevné linky je pro tenhle agent skrytý. Můžeš jen zvolit, jestli hovory
+                                        povedou dosavadní cestou, nebo přes vlastní ústřednu.
+                                    </div>
+                                </div>
+                            )}
+
+                            {isFbSelected && (
+                                <div className="form-group">
+                                    <label className="form-label">Cesta volání (Facebook leady)</label>
+                                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                        <button
+                                            type="button"
+                                            className={`btn ${!isAsterisk ? 'btn-primary' : 'btn-outline'}`}
+                                            onClick={() => handleFbRouteChange('odorik')}
+                                        >
+                                            📘 Odorik + Twilio (dosavadní)
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className={`btn ${isAsterisk ? 'btn-primary' : 'btn-outline'}`}
+                                            onClick={() => handleFbRouteChange('asterisk')}
+                                        >
+                                            🛰 Vlastní ústředna (Asterisk + Odorik)
+                                        </button>
                                     </div>
                                 </div>
                             )}
@@ -539,7 +571,7 @@ const Calling: React.FC = () => {
                                 </div>
                             )}
 
-                            {isFbSelected && (
+                            {isFbSelected && !isAsterisk && (
                                 <div className="form-group">
                                     <label className="form-label">Volací mód</label>
                                     <div style={{
@@ -668,7 +700,7 @@ const Calling: React.FC = () => {
                         <div className="card-body">
                             <div className="alert alert-warning mb-16">
                                 <div>
-                                    {isFbSelected ? (
+                                    {isFbSelected && !isAsterisk ? (
                                         <>
                                             Poskytovatel: <strong>📘 Odorik — Facebook (7 linek, rotující)</strong><br />
                                             Volací mód: <strong>🔄 Rotující</strong> ({fbIdentityCount} identit se střídá)<br />
@@ -714,7 +746,7 @@ const Calling: React.FC = () => {
             {step === 'calling' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div style={{ background: 'var(--primary-light)', border: '1px solid #bfdbfe', borderRadius: 'var(--radius)', padding: '8px 14px', fontSize: 13, color: 'var(--primary)', fontWeight: 600, marginBottom: 12 }}>
-                        🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {isFbSelected ? '📘 FB rotující' : (provider === 'twilio' ? '☎️ Twilio' : provider === 'asterisk' ? '🛰 Asterisk + Odorik' : `📱 Odorik ${ODORIK_LINE_LABELS[odorikLine].label}`)} · {sequential ? 'sekvenční' : `${workers} worker${workers > 1 ? 'y' : ''}`} · „{displayedPitch.slice(0, 55)}..."
+                        🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {isFbSelected && !isAsterisk ? '📘 FB rotující' : (provider === 'twilio' ? '☎️ Twilio' : provider === 'asterisk' ? '🛰 Asterisk + Odorik' : `📱 Odorik ${ODORIK_LINE_LABELS[odorikLine].label}`)} · {sequential ? 'sekvenční' : `${workers} worker${workers > 1 ? 'y' : ''}`} · „{displayedPitch.slice(0, 55)}..."
                     </div>
                     <div className="live-feed mb-16">
                         <span className="live-dot" />
