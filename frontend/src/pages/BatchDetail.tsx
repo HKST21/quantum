@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { getBatchResults, BatchResultLead } from '../api';
+import { getBatchResults, BatchResultLead, getBatchJobsForDay, batchJobLogUrl, BatchJobInfo } from '../api';
 import * as XLSX from 'xlsx';
 
 const AGENT_NAMES: Record<string, string> = {
@@ -16,6 +16,33 @@ const AGENT_NAMES: Record<string, string> = {
     '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d': 'Eva FB V9',
 };
 
+const JOB_STATUS: Record<string, { text: string; cls: string }> = {
+    pending: { text: 'Čeká', cls: 'badge-warning' },
+    running: { text: 'Běží', cls: 'badge-success' },
+    completed: { text: 'Dokončeno', cls: 'badge-gray' },
+    stopped: { text: 'Zastaveno', cls: 'badge-warning' },
+    failed: { text: 'Selhalo', cls: 'badge-danger' },
+};
+
+const fmtClock = (iso: string | null): string => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? '—' : d.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
+};
+
+const fmtJobDuration = (job: BatchJobInfo): string => {
+    const start = job.startedAt ?? job.createdAt;
+    if (!start) return '—';
+    const end = job.finishedAt ? new Date(job.finishedAt).getTime() : Date.now();
+    const sec = Math.max(0, Math.round((end - new Date(start).getTime()) / 1000));
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    return h > 0 ? `${h} h ${m} min` : `${m} min`;
+};
+
+const fmtLogSize = (bytes: number): string =>
+    bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} kB`;
+
 const BatchDetail: React.FC = () => {
     const { date } = useParams<{ date: string }>();
     const navigate = useNavigate();
@@ -27,6 +54,7 @@ const BatchDetail: React.FC = () => {
     const [leads, setLeads] = useState<BatchResultLead[]>([]);
     const [loading, setLoading] = useState(true);
     const [playingUrl, setPlayingUrl] = useState<string | null>(null);
+    const [jobs, setJobs] = useState<BatchJobInfo[]>([]);
 
     useEffect(() => {
         const load = async () => {
@@ -41,6 +69,21 @@ const BatchDetail: React.FC = () => {
             }
         };
         load();
+    }, [date, agentUserId]);
+
+    // Dávky (úkoly na ústředně) toho dne + jejich podrobné logy. Chyba tady nesmí rozbít zbytek stránky.
+    useEffect(() => {
+        const loadJobs = async () => {
+            if (!date) return;
+            try {
+                const res = await getBatchJobsForDay(date, agentUserId);
+                setJobs(res.jobs);
+            } catch (err) {
+                console.error('Failed to load batch jobs:', err);
+                setJobs([]);
+            }
+        };
+        loadJobs();
     }, [date, agentUserId]);
 
     const formatDate = (dateStr: string): string => {
@@ -110,6 +153,52 @@ const BatchDetail: React.FC = () => {
                     ⬇ Export XLSX
                 </button>
             </div>
+
+            {jobs.length > 0 && (
+                <div className="card mb-24">
+                    <div className="card-header">
+                        <span className="card-title">📋 Dávky tohoto dne ({jobs.length}) — podrobný log z ústředny</span>
+                    </div>
+                    <div className="card-body">
+                        <table style={{ width: '100%' }}>
+                            <thead>
+                            <tr>
+                                <th>Start</th>
+                                <th>Konec</th>
+                                <th>Trvání</th>
+                                <th>Stav</th>
+                                <th>Leadů</th>
+                                <th>Log</th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            {jobs.map((j) => (
+                                <tr key={j.id}>
+                                    <td style={{ whiteSpace: 'nowrap' }}>{fmtClock(j.startedAt ?? j.createdAt)}</td>
+                                    <td className="td-muted" style={{ whiteSpace: 'nowrap' }}>{fmtClock(j.finishedAt)}</td>
+                                    <td className="td-muted">{fmtJobDuration(j)}</td>
+                                    <td>
+                                        <span className={`badge ${JOB_STATUS[j.status]?.cls ?? 'badge-gray'}`} title={j.errorMessage ?? undefined}>
+                                            {JOB_STATUS[j.status]?.text ?? j.status}
+                                        </span>
+                                    </td>
+                                    <td className="td-muted">{j.processedLeads}/{j.queuedLeads ?? '?'}</td>
+                                    <td>
+                                        {j.hasLog ? (
+                                            <a className="btn btn-outline btn-sm" href={batchJobLogUrl(j.id)} download>
+                                                ⬇ Stáhnout log <span className="td-muted">({fmtLogSize(j.logBytes)})</span>
+                                            </a>
+                                        ) : (
+                                            <span className="td-muted" style={{ fontSize: 12 }}>log vypršel (uchovává se 3 dny)</span>
+                                        )}
+                                    </td>
+                                </tr>
+                            ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
 
             {!loading && leads.length > 0 && (
                 <div className="stats-grid mb-24">

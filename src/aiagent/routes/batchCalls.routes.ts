@@ -14,6 +14,12 @@ import {
     reassignLeads,
     deleteLeads,
 } from '../controllers/batchCalls.controller';
+import {
+    getActiveBatchJob,
+    getBatchJobsForDay,
+    getBatchJobsSummary,
+    downloadBatchJobLog,
+} from '../controllers/batchJobs.controller';
 import { authenticate } from '../../middleware/authenticate';
 import { authorize } from '../../middleware/authorize';
 
@@ -42,6 +48,14 @@ router.get('/twilio-number', getTwilioNumber);
 router.get('/unanswered', getUnanswered);
 router.post('/retry-unanswered', retryUnanswered);
 router.get('/avg-duration', getAvgDuration);
+
+// Živý přehled dávky na ústředně + stažení podrobného logu (NOVÉ 3.11.2026, jen ADMIN — viz router.use výše).
+// Pořadí je důležité: pevné cesty (/active, /summary) musí být před /:id/log.
+router.get('/batch-jobs/active', getActiveBatchJob);
+router.get('/batch-jobs/summary', getBatchJobsSummary);
+router.get('/batch-jobs/:id/log', downloadBatchJobLog);
+router.get('/batch-jobs', getBatchJobsForDay);
+
 router.post('/import-leads', upload.single('file'), importLeads);
 router.post('/verify-password', verifyPassword);
 router.post('/reassign-leads', reassignLeads);

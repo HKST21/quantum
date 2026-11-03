@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getBatchHistory, BatchHistoryItem } from '../api';
+import { getBatchHistory, BatchHistoryItem, getBatchJobsSummary, batchJobLogUrl, BatchJobDaySummary } from '../api';
 
 const AGENT_COLORS: Record<string, string> = {
     '53c65ca7-68bc-4948-83e5-35a64c17f0fb': '#2563eb', // Eva V1 - modrá
@@ -20,6 +20,7 @@ const AGENT_COLORS: Record<string, string> = {
 const BatchHistory: React.FC = () => {
     const [batches, setBatches] = useState<BatchHistoryItem[]>([]);
     const [loading, setLoading] = useState(true);
+    const [logSummary, setLogSummary] = useState<Record<string, BatchJobDaySummary>>({});
     const navigate = useNavigate();
 
     useEffect(() => {
@@ -34,6 +35,21 @@ const BatchHistory: React.FC = () => {
             }
         };
         load();
+    }, []);
+
+    // Které dny/agenti mají uložený podrobný log z ústředny (uchovává se 3 dny). Chyba tu nesmí rozbít historii.
+    useEffect(() => {
+        const loadLogs = async () => {
+            try {
+                const res = await getBatchJobsSummary();
+                const map: Record<string, BatchJobDaySummary> = {};
+                res.days.forEach((d) => { map[`${d.date}|${d.agentId}`] = d; });
+                setLogSummary(map);
+            } catch (err) {
+                console.error('Failed to load batch log summary:', err);
+            }
+        };
+        loadLogs();
     }, []);
 
     const formatDuration = (sec: number): string => {
@@ -176,6 +192,7 @@ const BatchHistory: React.FC = () => {
                             <th>Odkládá</th>
                             <th>Konverze</th>
                             <th>Prům. délka</th>
+                            <th>Log</th>
                             <th>Detail</th>
                         </tr>
                         </thead>
@@ -219,6 +236,28 @@ const BatchHistory: React.FC = () => {
                                         </span>
                                 </td>
                                 <td className="td-muted">{formatDuration(batch.avgDuration)}</td>
+                                <td onClick={(e) => e.stopPropagation()}>
+                                    {(() => {
+                                        const ls = logSummary[`${String(batch.datum).slice(0, 10)}|${(batch as any).agentId}`];
+                                        if (!ls) return <span className="td-muted" title="Log se uchovává 3 dny">—</span>;
+                                        if (ls.logs === 1) {
+                                            return (
+                                                <a className="btn btn-outline btn-sm" href={batchJobLogUrl(ls.jobIds[0])} download>
+                                                    ⬇ Log
+                                                </a>
+                                            );
+                                        }
+                                        return (
+                                            <button
+                                                className="btn btn-outline btn-sm"
+                                                title="Více dávek toho dne — logy jsou v detailu"
+                                                onClick={() => navigate(`/crm/history/${batch.datum}?agentUserId=${(batch as any).agentId}`)}
+                                            >
+                                                📄 {ls.logs} {ls.logs >= 5 ? 'logů' : 'logy'}
+                                            </button>
+                                        );
+                                    })()}
+                                </td>
                                 <td>
                                     <button
                                         className="btn btn-outline btn-sm"

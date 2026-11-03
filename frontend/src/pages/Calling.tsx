@@ -3,6 +3,7 @@ import {
     getBatchStatus, getTwilioNumber, getAvgDuration, getOdorikConfig,
     startAICalling, stopAICalling, BatchStatus, AvgDuration, OdorikConfig, CallProvider, CallEngine, OdorikLine, CallMode,
 } from '../api';
+import BatchJobPanel from '../components/BatchJobPanel';
 
 type CallingStep = 'setup' | 'reauth' | 'calling' | 'done';
 
@@ -369,6 +370,9 @@ const Calling: React.FC = () => {
             </div>
 
             {error && <div className="alert alert-danger mb-16">⚠️ {error}</div>}
+
+            {/* Živý stav dávky na ústředně + stažení logu (jen ADMIN, funguje nezávisle na tom, kdo dávku spustil) */}
+            <BatchJobPanel />
 
             {step === 'setup' && (
                 <div style={{ maxWidth: 580 }}>

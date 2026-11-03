@@ -206,6 +206,57 @@ export const stopAICalling = (agentUserId?: string): Promise<{ success: boolean;
         body: JSON.stringify({ agentUserId }),
     });
 
+// ============================================
+// BATCH JOBS — živý přehled dávky na ústředně + podrobný log (jen ADMIN, 3 dny)
+// ============================================
+
+export interface BatchJobInfo {
+    id: string;
+    agentId: string;
+    agentName: string;
+    status: 'pending' | 'running' | 'completed' | 'stopped' | 'failed';
+    queuedLeads: number | null;
+    processedLeads: number;
+    maxCalls: number;
+    stopRequested: boolean;
+    errorMessage: string | null;
+    createdAt: string;
+    startedAt: string | null;
+    heartbeatAt: string | null;
+    finishedAt: string | null;
+    hasLog: boolean;
+    logBytes: number;
+}
+
+export interface ActiveBatchJobInfo extends BatchJobInfo {
+    lastLogAt: string | null;
+    lastLogAgeSec: number | null;
+    heartbeatAgeSec: number | null;
+    tail: string[];
+}
+
+export interface BatchJobDaySummary {
+    date: string;      // YYYY-MM-DD (Europe/Prague)
+    agentId: string;
+    logs: number;      // kolik dávek toho dne má uložený log
+    jobIds: string[];
+}
+
+export const getActiveBatchJob = (): Promise<{ active: ActiveBatchJobInfo | null; recent: BatchJobInfo[] }> =>
+    fetchJson('/ai-calls/batch-jobs/active');
+
+export const getBatchJobsForDay = (date: string, agentUserId?: string): Promise<{ date: string; jobs: BatchJobInfo[] }> => {
+    const query = agentUserId ? `&agentUserId=${agentUserId}` : '';
+    return fetchJson(`/ai-calls/batch-jobs?date=${encodeURIComponent(date.slice(0, 10))}${query}`);
+};
+
+export const getBatchJobsSummary = (): Promise<{ days: BatchJobDaySummary[] }> =>
+    fetchJson('/ai-calls/batch-jobs/summary');
+
+// Log se stahuje přímým odkazem (<a href download>) — fetchJson umí jen JSON.
+export const batchJobLogUrl = (jobId: string): string =>
+    `${API_BASE}/ai-calls/batch-jobs/${jobId}/log`;
+
 export const getAgents = (): Promise<{ users: Agent[] }> =>
     fetchJson('/users');
 
