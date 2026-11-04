@@ -86,11 +86,11 @@ const ODORIK_LINE_DISPLAY_CLIP: Record<'mobilni' | 'pevna', string> = {
 
 const Calling: React.FC = () => {
     const [step, setStep] = useState<CallingStep>('setup');
-    const [provider, setProvider] = useState<CallProvider>('twilio');
-    const [engine, setEngine] = useState<CallEngine>('openai');
+    const [provider, setProvider] = useState<CallProvider>('asterisk'); // od 4. 11. 2026 jen vlastní ústředna (Twilio / Odorik jsou vizuálně vypnuté)
+    const [engine, setEngine] = useState<CallEngine>('gemini');
     const [odorikLine, setOdorikLine] = useState<OdorikLine>('mobilni');
-    const [callMode, setCallMode] = useState<CallMode>('parallel');
-    const [selectedAgent, setSelectedAgent] = useState<AgentOption>(AGENTS[0]);
+    const [callMode, setCallMode] = useState<CallMode>('rotating');
+    const [selectedAgent, setSelectedAgent] = useState<AgentOption>(AGENTS.find(a => a.id === GEMINI_DEFAULT_AGENT_ID) ?? AGENTS[0]);
     const [maxCalls, setMaxCalls] = useState<number>(100);
     const [workers, setWorkers] = useState<number>(1);
     // Asterisk + Odorik: počet souběžných hovorů na ústředně (1 = jako dosud, sériově). Strop 2.
@@ -162,7 +162,7 @@ const Calling: React.FC = () => {
 
     useEffect(() => {
         if (isFbSelected) {
-            setProvider((p) => (p === 'asterisk' ? 'asterisk' : 'odorik'));
+            setProvider('asterisk'); // dosavadní cesta (Odorik + Twilio) je vypnutá
             setOdorikLine('fb');
             setCallMode('rotating');
         } else if (odorikLine === 'fb') {
@@ -453,6 +453,8 @@ const Calling: React.FC = () => {
                                             type="button"
                                             className={`btn ${!isAsterisk ? 'btn-primary' : 'btn-outline'}`}
                                             onClick={() => handleFbRouteChange('odorik')}
+                                            disabled
+                                            title="Vypnuto — hovory jdou jen přes vlastní ústřednu (Asterisk + Odorik)"
                                         >
                                             📘 Odorik + Twilio (dosavadní)
                                         </button>
@@ -500,6 +502,8 @@ const Calling: React.FC = () => {
                                             type="button"
                                             className={`btn ${provider === 'twilio' ? 'btn-primary' : 'btn-outline'}`}
                                             onClick={() => handleProviderChange('twilio')}
+                                            disabled
+                                            title="Vypnuto — hovory jdou jen přes vlastní ústřednu (Asterisk + Odorik)"
                                         >
                                             ☎️ Twilio (pevná linka)
                                         </button>
@@ -507,6 +511,8 @@ const Calling: React.FC = () => {
                                             type="button"
                                             className={`btn ${provider === 'odorik' ? 'btn-primary' : 'btn-outline'}`}
                                             onClick={() => handleProviderChange('odorik')}
+                                            disabled
+                                            title="Vypnuto — hovory jdou jen přes vlastní ústřednu (Asterisk + Odorik)"
                                         >
                                             📱 Odorik (mobilní)
                                         </button>
@@ -771,37 +777,42 @@ const Calling: React.FC = () => {
                     <div style={{ background: 'var(--primary-light)', border: '1px solid #bfdbfe', borderRadius: 'var(--radius)', padding: '8px 14px', fontSize: 13, color: 'var(--primary)', fontWeight: 600, marginBottom: 12 }}>
                         🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {isFbSelected && !isAsterisk ? '📘 FB rotující' : (provider === 'twilio' ? '☎️ Twilio' : provider === 'asterisk' ? '🛰 Asterisk + Odorik' : `📱 Odorik ${ODORIK_LINE_LABELS[odorikLine].label}`)} · {isAsterisk && asteriskParallel > 1 ? `${asteriskParallel} souběžně` : sequential ? 'sekvenční' : `${workers} worker${workers > 1 ? 'y' : ''}`} · „{displayedPitch.slice(0, 55)}..."
                     </div>
-                    <div className="live-feed mb-16">
-                        <span className="live-dot" />
-                        {batchStatus.isRunning && batchStatus.currentCall ? (
-                            <span>Právě volám: <strong>{batchStatus.currentCall.phone}</strong>{batchStatus.currentCall.companyName && <span style={{ color: '#86efac', marginLeft: 8 }}>{batchStatus.currentCall.companyName}</span>}</span>
-                        ) : (
-                            <span style={{ color: '#fbbf24' }}>⏳ Připravuji další hovor...</span>
-                        )}
-                    </div>
-                    <div className="card mb-16">
-                        <div className="card-body">
-                            <div className="flex justify-between items-center mb-8">
-                                <span style={{ fontWeight: 600 }}>Průběh dávky</span>
-                                <span style={{ fontSize: 13, color: 'var(--gray-500)' }}>{batchStatus.today.completed} hovorů dokončeno</span>
+                    {/* Asterisk: průběh dávky, kdo se právě volá a log jsou v panelu nahoře (BatchJobPanel); starý přehled tu neukazujeme. */}
+                    {!isAsterisk && (
+                        <>
+                            <div className="live-feed mb-16">
+                                <span className="live-dot" />
+                                {batchStatus.isRunning && batchStatus.currentCall ? (
+                                    <span>Právě volám: <strong>{batchStatus.currentCall.phone}</strong>{batchStatus.currentCall.companyName && <span style={{ color: '#86efac', marginLeft: 8 }}>{batchStatus.currentCall.companyName}</span>}</span>
+                                ) : (
+                                    <span style={{ color: '#fbbf24' }}>⏳ Připravuji další hovor...</span>
+                                )}
                             </div>
-                            <div className="progress-wrapper"><div className="progress-bar" style={{ width: `${progressPercent()}%` }} /></div>
-                            <div className="flex justify-between items-center mt-8">
-                                <span style={{ fontSize: 12, color: 'var(--gray-400)' }}>{progressPercent()}% dokončeno</span>
-                                <span style={{ fontSize: 12, color: 'var(--gray-500)', fontWeight: 600 }}>Zbývá: {remainingTime()}</span>
+                            <div className="card mb-16">
+                                <div className="card-body">
+                                    <div className="flex justify-between items-center mb-8">
+                                        <span style={{ fontWeight: 600 }}>Průběh dávky</span>
+                                        <span style={{ fontSize: 13, color: 'var(--gray-500)' }}>{batchStatus.today.completed} hovorů dokončeno</span>
+                                    </div>
+                                    <div className="progress-wrapper"><div className="progress-bar" style={{ width: `${progressPercent()}%` }} /></div>
+                                    <div className="flex justify-between items-center mt-8">
+                                        <span style={{ fontSize: 12, color: 'var(--gray-400)' }}>{progressPercent()}% dokončeno</span>
+                                        <span style={{ fontSize: 12, color: 'var(--gray-500)', fontWeight: 600 }}>Zbývá: {remainingTime()}</span>
+                                    </div>
+                                </div>
                             </div>
-                        </div>
-                    </div>
-                    <div className="stats-grid mb-16">
-                        <div className="stat-card"><div className="stat-label">Celkem hovorů</div><div className="stat-value primary">{batchStatus.today.completed}</div></div>
-                        <div className="stat-card"><div className="stat-label">Zájem ✅</div><div className="stat-value success">{batchStatus.today.interested}</div></div>
-                        <div className="stat-card"><div className="stat-label">Nezvedl</div><div className="stat-value warning">{batchStatus.today.noAnswer}</div></div>
-                        <div className="stat-card"><div className="stat-label">Položil</div><div className="stat-value warning">{batchStatus.today.hungUp}</div></div>
-                        <div className="stat-card"><div className="stat-label">Odmítnuto</div><div className="stat-value danger">{batchStatus.today.rejected}</div></div>
-                        <div className="stat-card"><div className="stat-label">Konverze</div><div className="stat-value primary">{batchStatus.today.conversionRate}%</div></div>
-                        <div className="stat-card"><div className="stat-label">Prům. délka</div><div className="stat-value">{batchStatus.today.avgDuration > 0 ? formatDuration(batchStatus.today.avgDuration) : '—'}</div></div>
-                    </div>
-                    <div className="alert alert-info">💡 Stránka se automaticky aktualizuje každé 3 sekundy. Nezavírej okno prohlížeče.</div>
+                            <div className="stats-grid mb-16">
+                                <div className="stat-card"><div className="stat-label">Celkem hovorů</div><div className="stat-value primary">{batchStatus.today.completed}</div></div>
+                                <div className="stat-card"><div className="stat-label">Zájem ✅</div><div className="stat-value success">{batchStatus.today.interested}</div></div>
+                                <div className="stat-card"><div className="stat-label">Nezvedl</div><div className="stat-value warning">{batchStatus.today.noAnswer}</div></div>
+                                <div className="stat-card"><div className="stat-label">Položil</div><div className="stat-value warning">{batchStatus.today.hungUp}</div></div>
+                                <div className="stat-card"><div className="stat-label">Odmítnuto</div><div className="stat-value danger">{batchStatus.today.rejected}</div></div>
+                                <div className="stat-card"><div className="stat-label">Konverze</div><div className="stat-value primary">{batchStatus.today.conversionRate}%</div></div>
+                                <div className="stat-card"><div className="stat-label">Prům. délka</div><div className="stat-value">{batchStatus.today.avgDuration > 0 ? formatDuration(batchStatus.today.avgDuration) : '—'}</div></div>
+                            </div>
+                            <div className="alert alert-info">💡 Stránka se automaticky aktualizuje každé 3 sekundy. Nezavírej okno prohlížeče.</div>
+                        </>
+                    )}
                     {isAsterisk && (
                         <div style={{ marginTop: 16 }}>
                             {stopping ? (
