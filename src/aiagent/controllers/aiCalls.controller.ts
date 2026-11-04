@@ -134,18 +134,30 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
 
             const leadIdList: string[] = leads.map((l: any) => l.id);
 
-            const jobResult = await pool.query(
-                `INSERT INTO batch_jobs (agent_user_id, requested_by, status, lead_ids, max_calls, queued_leads)
-                 VALUES ($1, $2, 'pending', $3::uuid[], $4, $5)
-                 RETURNING id`,
-                [activeAgentId, req.user!.id, leadIdList, leadIdList.length, leadIdList.length]
-            );
+            // Souběžné hovory na ústředně: 1 (výchozí) = sériově jako dosud, max 2.
+            // Ústředna počet ještě sníží podle počtu identit ve skupině linek agenta.
+            const parallelCalls = Math.min(2, Math.max(1, Math.floor(Number(workers)) || 1));
 
-            console.log(`🛰 Asterisk job ${jobResult.rows[0].id} zařazen: ${leadIdList.length} leadů, agent ${activeAgentId}`);
+            // Při 1 se používá PŮVODNÍ INSERT (funguje i bez migrace 005 sloupce parallel_calls).
+            const jobResult = parallelCalls === 1
+                ? await pool.query(
+                    `INSERT INTO batch_jobs (agent_user_id, requested_by, status, lead_ids, max_calls, queued_leads)
+                     VALUES ($1, $2, 'pending', $3::uuid[], $4, $5)
+                     RETURNING id`,
+                    [activeAgentId, req.user!.id, leadIdList, leadIdList.length, leadIdList.length]
+                )
+                : await pool.query(
+                    `INSERT INTO batch_jobs (agent_user_id, requested_by, status, lead_ids, max_calls, queued_leads, parallel_calls)
+                     VALUES ($1, $2, 'pending', $3::uuid[], $4, $5, $6)
+                     RETURNING id`,
+                    [activeAgentId, req.user!.id, leadIdList, leadIdList.length, leadIdList.length, parallelCalls]
+                );
+
+            console.log(`🛰 Asterisk job ${jobResult.rows[0].id} zařazen: ${leadIdList.length} leadů, agent ${activeAgentId}, souběžně ${parallelCalls}`);
 
             res.status(200).json({
                 success: true,
-                message: `Dávka předána ústředně (Asterisk + Odorik): ${leadIdList.length} leadů, rotující, engine=gemini`,
+                message: `Dávka předána ústředně (Asterisk + Odorik): ${leadIdList.length} leadů, rotující${parallelCalls > 1 ? `, ${parallelCalls} souběžné hovory` : ''}, engine=gemini`,
                 queuedLeads: leadIdList.length,
                 aiAgentId: activeAgentId,
                 agentName: agentCheck.rows[0].full_name,

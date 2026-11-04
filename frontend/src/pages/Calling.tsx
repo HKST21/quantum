@@ -93,6 +93,8 @@ const Calling: React.FC = () => {
     const [selectedAgent, setSelectedAgent] = useState<AgentOption>(AGENTS[0]);
     const [maxCalls, setMaxCalls] = useState<number>(100);
     const [workers, setWorkers] = useState<number>(1);
+    // Asterisk + Odorik: počet souběžných hovorů na ústředně (1 = jako dosud, sériově). Strop 2.
+    const [asteriskParallel, setAsteriskParallel] = useState<number>(1);
     const [twilioNumber, setTwilioNumber] = useState<string>('');
     const [odorikConfig, setOdorikConfig] = useState<OdorikConfig | null>(null);
     const [avgDuration, setAvgDuration] = useState<AvgDuration | null>(null);
@@ -115,6 +117,8 @@ const Calling: React.FC = () => {
     // FB linky a jejich CLIP si bere worker na ústředně z vlastního .env)
     const isAsterisk = provider === 'asterisk';
     const sequential = isFbSelected || isAsterisk;
+    // Efektivní počet souběžných hovorů pro odhady a popisky
+    const effWorkers = isAsterisk ? asteriskParallel : (sequential ? 1 : workers);
     const availableAgents = AGENTS.filter(a => a.engines.includes(engine));
 
     const handleEngineChange = (newEngine: CallEngine) => {
@@ -270,7 +274,7 @@ const Calling: React.FC = () => {
 
     const remainingTime = (): string => {
         if (!batchStatus || !avgDuration) return '—';
-        const effectiveWorkers = sequential ? 1 : workers;
+        const effectiveWorkers = effWorkers;
         const callsPerWorker = Math.ceil(batchStatus.queueSize / effectiveWorkers);
         const totalSeconds = callsPerWorker * avgDuration.totalPerCall;
         const hours = Math.floor(totalSeconds / 3600);
@@ -318,7 +322,7 @@ const Calling: React.FC = () => {
                 return;
             }
 
-            await startAICalling(maxCalls, selectedAgent.id, isAsterisk ? 1 : workers, provider, engine, odorikLine, isAsterisk ? 'rotating' : callMode);
+            await startAICalling(maxCalls, selectedAgent.id, isAsterisk ? asteriskParallel : workers, provider, engine, odorikLine, isAsterisk ? 'rotating' : callMode);
             setStopConfirm(false);
             setStopping(false);
             setStopError('');
@@ -565,8 +569,24 @@ const Calling: React.FC = () => {
                                         🛰 Rotující — linky na vlastní ústředně se střídají
                                     </div>
                                     <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 8 }}>
-                                        Hovory jdou přes vlastní ústřednu (Asterisk) a Odorik, striktně jeden po druhém,
+                                        Hovory jdou přes vlastní ústřednu (Asterisk) a Odorik. Při 1 hovoru jeden po druhém,
                                         s 10–18s pauzou mezi nimi. Dávku lze zastavit tlačítkem Stop (rozběhnutý hovor doběhne).
+                                    </div>
+                                    <div style={{ marginTop: 12 }}>
+                                        <label className="form-label">Souběžných hovorů</label>
+                                        <div style={{ display: 'flex', gap: 8 }}>
+                                            {[1, 2].map(n => (
+                                                <button key={n} type="button" className={`btn ${asteriskParallel === n ? 'btn-primary' : 'btn-outline'}`} style={{ minWidth: 44 }} onClick={() => setAsteriskParallel(n)}>
+                                                    {n}
+                                                </button>
+                                            ))}
+                                        </div>
+                                        {asteriskParallel > 1 && (
+                                            <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 8 }}>
+                                                Každý hovor jede přes jinou linku (SIP jméno + CLIP), leady se berou ze společné fronty.
+                                                Když skupina linek agenta nemá dost identit, ústředna sníží počet sama (uvidíš v logu dávky).
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             )}
@@ -665,9 +685,9 @@ const Calling: React.FC = () => {
                                 <div className="alert alert-info">
                                     <div>
                                         <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                                            ⏱ Odhadovaný čas: {estimateTime(maxCalls, sequential ? 1 : workers)}
-                                            {!sequential && workers > 1 && <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 8, color: 'var(--primary)' }}>({workers}× rychleji)</span>}
-                                            {sequential && <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 8, color: 'var(--gray-500)' }}>(sekvenční, rotující)</span>}
+                                            ⏱ Odhadovaný čas: {estimateTime(maxCalls, effWorkers)}
+                                            {effWorkers > 1 && <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 8, color: 'var(--primary)' }}>({effWorkers}× rychleji)</span>}
+                                            {sequential && effWorkers === 1 && <span style={{ fontSize: 12, fontWeight: 400, marginLeft: 8, color: 'var(--gray-500)' }}>(sekvenční, rotující)</span>}
                                         </div>
                                         <div style={{ fontSize: 12 }}>
                                             Průměrný hovor: {formatDuration(avgDuration.avgDuration)} + {avgDuration.overhead}s overhead
@@ -718,10 +738,13 @@ const Calling: React.FC = () => {
                                     Engine: <strong>{ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label}</strong><br />
                                     Agent: <strong>{selectedAgent.name}</strong> — {selectedAgent.description}<br />
                                     Počet hovorů: <strong>{maxCalls.toLocaleString('cs-CZ')}</strong><br />
+                                    {isAsterisk && asteriskParallel > 1 && (
+                                        <>Souběžných hovorů: <strong>{asteriskParallel}×</strong><br /></>
+                                    )}
                                     {!sequential && (
                                         <>Workeři: <strong>{workers}×</strong> <span style={{ fontFamily: 'monospace', fontSize: 12 }}>({workerLabels.slice(0, workers).join(', ')})</span><br /></>
                                     )}
-                                    Odhadovaný čas: <strong>{estimateTime(maxCalls, sequential ? 1 : workers)}</strong><br /><br />
+                                    Odhadovaný čas: <strong>{estimateTime(maxCalls, effWorkers)}</strong><br /><br />
                                     Pro potvrzení zadej své heslo.
                                 </div>
                             </div>
@@ -746,7 +769,7 @@ const Calling: React.FC = () => {
             {step === 'calling' && batchStatus && (
                 <div style={{ maxWidth: 640 }}>
                     <div style={{ background: 'var(--primary-light)', border: '1px solid #bfdbfe', borderRadius: 'var(--radius)', padding: '8px 14px', fontSize: 13, color: 'var(--primary)', fontWeight: 600, marginBottom: 12 }}>
-                        🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {isFbSelected && !isAsterisk ? '📘 FB rotující' : (provider === 'twilio' ? '☎️ Twilio' : provider === 'asterisk' ? '🛰 Asterisk + Odorik' : `📱 Odorik ${ODORIK_LINE_LABELS[odorikLine].label}`)} · {sequential ? 'sekvenční' : `${workers} worker${workers > 1 ? 'y' : ''}`} · „{displayedPitch.slice(0, 55)}..."
+                        🤖 {selectedAgent.name} · {ENGINE_LABELS[engine].icon} {ENGINE_LABELS[engine].label} · {isFbSelected && !isAsterisk ? '📘 FB rotující' : (provider === 'twilio' ? '☎️ Twilio' : provider === 'asterisk' ? '🛰 Asterisk + Odorik' : `📱 Odorik ${ODORIK_LINE_LABELS[odorikLine].label}`)} · {isAsterisk && asteriskParallel > 1 ? `${asteriskParallel} souběžně` : sequential ? 'sekvenční' : `${workers} worker${workers > 1 ? 'y' : ''}`} · „{displayedPitch.slice(0, 55)}..."
                     </div>
                     <div className="live-feed mb-16">
                         <span className="live-dot" />

@@ -247,6 +247,10 @@ export const downloadBatchJobLog = async (req: Request, res: Response, next: Nex
                 `# Spuštěn:     ${fmtPrague(job.started_at)}`,
                 `# Dokončen:    ${fmtPrague(job.finished_at)}`,
                 `# Čas v řádcích: ${TZ} (YYYY-MM-DD HH:mm:ss.SSS)`,
+                ...(Number(job.parallel_calls) > 1 ? [
+                    `# Souběžně:   ${job.parallel_calls} hovory najednou (skutečný počet viz řádek "Paralelní dávka" v logu; ústředna ho může snížit podle počtu linek)`,
+                    '#             Řádky s [W1] / [W2] za časem patří první / druhé souběžné lince; v souhrnu na konci je max souběžně a použití identit.',
+                ] : []),
                 `# Staženo:     ${fmtPrague(new Date())} (${req.user?.fullName ?? '—'})`,
                 '#',
                 '# Jak číst (hledej podle telefonu nebo 6místného označení hovoru, které je v řádcích Lead / ARI / Timeline / Gemini / Zákazník):',
