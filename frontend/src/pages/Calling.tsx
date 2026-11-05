@@ -93,7 +93,7 @@ const Calling: React.FC = () => {
     const [selectedAgent, setSelectedAgent] = useState<AgentOption>(AGENTS.find(a => a.id === GEMINI_DEFAULT_AGENT_ID) ?? AGENTS[0]);
     const [maxCalls, setMaxCalls] = useState<number>(100);
     const [workers, setWorkers] = useState<number>(1);
-    // Asterisk + Odorik: počet souběžných hovorů na ústředně (1 = jako dosud, sériově). Strop 2.
+    // Asterisk + Odorik: počet souběžných hovorů na ústředně (1 = jako dosud, sériově). Strop 3.
     const [asteriskParallel, setAsteriskParallel] = useState<number>(1);
     const [twilioNumber, setTwilioNumber] = useState<string>('');
     const [odorikConfig, setOdorikConfig] = useState<OdorikConfig | null>(null);
@@ -581,7 +581,7 @@ const Calling: React.FC = () => {
                                     <div style={{ marginTop: 12 }}>
                                         <label className="form-label">Souběžných hovorů</label>
                                         <div style={{ display: 'flex', gap: 8 }}>
-                                            {[1, 2].map(n => (
+                                            {[1, 2, 3].map(n => (
                                                 <button key={n} type="button" className={`btn ${asteriskParallel === n ? 'btn-primary' : 'btn-outline'}`} style={{ minWidth: 44 }} onClick={() => setAsteriskParallel(n)}>
                                                     {n}
                                                 </button>

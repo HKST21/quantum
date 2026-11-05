@@ -134,9 +134,9 @@ export const startAICalling = async (req: Request, res: Response, next: NextFunc
 
             const leadIdList: string[] = leads.map((l: any) => l.id);
 
-            // Souběžné hovory na ústředně: 1 (výchozí) = sériově jako dosud, max 2.
+            // Souběžné hovory na ústředně: 1 (výchozí) = sériově jako dosud, max 3.
             // Ústředna počet ještě sníží podle počtu identit ve skupině linek agenta.
-            const parallelCalls = Math.min(2, Math.max(1, Math.floor(Number(workers)) || 1));
+            const parallelCalls = Math.min(3, Math.max(1, Math.floor(Number(workers)) || 1));
 
             // Při 1 se používá PŮVODNÍ INSERT (funguje i bez migrace 005 sloupce parallel_calls).
             const jobResult = parallelCalls === 1

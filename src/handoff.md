@@ -44,7 +44,7 @@ který přebírá projekt. Přečti ho celý, než na cokoli sáhneš. Je psaný
 | Nahrávky pro klienta (1 stereo MP3, odkaz u leadu, mazání po 14 dnech) | **Hotovo a ověřeno** (přehrání v prohlížeči i z UI) |
 | Konec hovoru bez opakování poslední věty | **Nasazeno, 4 testy v pořádku**; čeká na sledování v ostrém provozu (§9) |
 | Sériový režim (rotace identit, jeden hovor najednou) | Hotovo |
-| **Paralelní režim** (1–2 souběžné hovory, volba v CRM, §12a) | **Implementováno 4. 11. 2026, offline otestováno; čeká na živý test** (strop 2, Hejda plánuje ~3 → až po ověření) |
+| **Paralelní režim** (1–3 souběžné hovory, volba v CRM, §12a) | **2 hovory ověřeny živě 5. 11. 2026** (dávka 800 leadů, server skoro v klidu); strop zvýšen na 3, **3 čeká na živý test** |
 | Kvalita přepisu řeči zákazníka, odstranění zbytečného převodu zvuku | **TODO** (hned po nahrávkách; slíbeno zadavateli) |
 | Nové stavy (neexistující číslo, vypnutý telefon, hlasová schránka) | **TODO** (nejdřív sledovat surová data z Odoriku) |
 | Facebook agenti přes Asterisk | **TODO** (UI je teď pro provider Asterisk skrývá) |
@@ -382,10 +382,10 @@ Mapování je **1:1 s původním Quantum/Twilio** (neměnit bez pokynu):
 
 ### 12a. Paralelní hovory (od 4. 11. 2026)
 
-- **UI:** u provideru „Asterisk + Odorik“ tlačítka **Souběžných hovorů 1 / 2** (`Calling.tsx`, stav `asteriskParallel`). Posílá se v existujícím poli `workers`. Výchozí 1 = stejné chování jako dřív.
-- **Backend:** `aiCalls.controller.ts` (větev `asterisk`) omezí hodnotu na 1–2. Při 1 používá **původní INSERT** (bez nového sloupce), při 2 INSERT s `parallel_calls`. Hlavička stahovaného logu má `# Souběžně:` jen u paralelních dávek (`batchJobs.controller.ts`).
+- **UI:** u provideru „Asterisk + Odorik“ tlačítka **Souběžných hovorů 1 / 2 / 3** (`Calling.tsx`, stav `asteriskParallel`). Posílá se v existujícím poli `workers`. Výchozí 1 = stejné chování jako dřív.
+- **Backend:** `aiCalls.controller.ts` (větev `asterisk`) omezí hodnotu na 1–3. Při 1 používá **původní INSERT** (bez nového sloupce), při 2–3 INSERT s `parallel_calls`. Hlavička stahovaného logu má `# Souběžně:` jen u paralelních dávek (`batchJobs.controller.ts`).
 - **DB:** migrace `005_batch_job_parallel.sql` (`batch_jobs.parallel_calls`, default 1). **Spustit v pgAdminu jako vlastník dřív, než se paralelní dávka poprvé zadá.**
-- **Ústředna:** `jobWorker.ts` → `callOrchestrator.runParallel` (nový, `runRotating` zůstal netknutý), `identityPool.ts` (sdílený pool identit + `resolveParallelCalls`, `MAX_PARALLEL_CALLS = 2`), `workerContext.ts` + `jobLogCapture.ts` (značky `[W1]`/`[W2]` v uloženém logu).
+- **Ústředna:** `jobWorker.ts` → `callOrchestrator.runParallel` (nový, `runRotating` zůstal netknutý), `identityPool.ts` (sdílený pool identit + `resolveParallelCalls`, `MAX_PARALLEL_CALLS = 3`), `workerContext.ts` + `jobLogCapture.ts` (značky `[W1]`/`[W2]` v uloženém logu).
 - **Pravidla:** identita (SIP jméno + CLIP) je držená po celý hovor včetně pauzy 10–18 s, nikdy ve dvou hovorech; leady ze společné fronty; stejné číslo nikdy souběžně; při méně identitách než požadovaných hovorů ústředna počet sníží a napíše to do logu („Paralelní dávka: požadováno … běží …“).
 - **Test (živě, jen vlastní číslo):** dávka 6 leadů, agent V2, 2 souběžné → v logu hledej `[W1]`/`[W2]` s různými SIP jmény, `souběžně běží: 2` a souhrn na konci; pak dávku s 1 hovorem (musí být jako dřív); Stop uprostřed paralelní dávky. Sledovat zátěž serveru (1 vCPU / 2 GB).
 - **Neověřeno:** že Asterisk bez další konfigurace volá přes libovolné SIP jméno (`PJSIP/<jméno>@odorik`; podle konfigurace ano) a že 2 Gemini session najednou server zvládne.
@@ -513,7 +513,7 @@ Pořadí, jak to Štěpán domluvil:
 
 1. **Kvalita přepisu a odstranění zbytečného převodu zvuku** (PCM→µ-law→PCM zděděný z Twilia; `audioConverter.ts` zachoval název `twilioToGemini`, `audioSocketAdapter.ts` dělá mezi AudioSocketem a ním adaptaci). Zlepšit `inputTranscription`, analyzovat `-zakaznik.wav`.
 2. **Dokončit testy Stop a druhého spuštění** v UI.
-3. **Paralelní režim:** hotovo pro 1–2 souběžné hovory (§12a), **čeká na živý test**. Hejda plánuje ~3: navýšit strop (`MAX_PARALLEL_CALLS`, CHECK v migraci, FE, controller) až po ověření zátěže (1 vCPU / 2 GB RAM). Podmínka: 1 SIP jméno = 1 souběžný hovor; pool má **5** linek.
+3. **Paralelní režim:** hotovo pro 1–3 souběžné hovory (§12a); 2 ověřeno živě, **3 čeká na živý test**. Dál (4–5) jen po ověření limitů Gemini a Odoriku: navýšit strop (`MAX_PARALLEL_CALLS`, CHECK v migraci, FE, controller) až po ověření zátěže (1 vCPU / 2 GB RAM). Podmínka: 1 SIP jméno = 1 souběžný hovor; pool má **5** linek.
 4. **Nové stavy:** neexistující číslo, vypnutý telefon, hlasová schránka. Nejdřív sledovat **surová data z Odoriku** (SIP příčiny, `cause`), pak rozhodnout o mapování.
 5. **FB agenti přes Asterisk** (dnes UI FB agenty při provideru Asterisk skrývá; skupina `fb` ve workeru existuje; FB V9 musí jít i přes Twilio/Odorik+Twilio).
 6. **Redukce agentů** (§7).
