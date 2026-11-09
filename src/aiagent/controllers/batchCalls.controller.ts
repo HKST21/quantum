@@ -15,8 +15,8 @@ const getAgentId = (req: Request): string =>
 // normálně zapsaly. Až přibude další agent (další Gemini prompt nebo
 // nová OpenAI verze), přidej jeho UUID sem.
 //
-// ⚠️ 1.11.2026: aktivní agenti jsou jen Eva V1, Eva V5, Eva Gemini V2 a
-// Eva FB V9. UUID zrušených agentů (V2, V3, V4, FB V6, V7, V8) tu ZÁMĚRNĚ
+// ⚠️ 1.11.2026: aktivní agenti jsou jen Eva V1, Eva V5, Eva Gemini V2,
+// Eva FB V9 a (od 6.11.2026) Eva FB V10. UUID zrušených agentů (V2, V3, V4, FB V6, V7, V8) tu ZÁMĚRNĚ
 // ZŮSTÁVAJÍ — jejich historické hovory v ai_call_logs by jinak zmizely z
 // Historie dávek a statistik. Nemazat.
 const AI_AGENT_IDS = [
@@ -33,6 +33,7 @@ const AI_AGENT_IDS = [
     '773db522-8df4-4903-9b4f-019b8b0969b5', // Eva FB V7
     'a2a7c4f6-1b90-4b64-8899-451dca563c96', // Eva FB V8
     '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d', // Eva FB V9
+    '05f8e45d-1fda-4668-8e8b-2bdca0e5dcad', // Eva FB V10 (A/B test, 6.11.2026)
 ];
 
 // ============================================

@@ -14,6 +14,7 @@ const AGENT_NAMES: Record<string, string> = {
     '773db522-8df4-4903-9b4f-019b8b0969b5': 'Eva FB V7',
     'a2a7c4f6-1b90-4b64-8899-451dca563c96': 'Eva FB V8',
     '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d': 'Eva FB V9',
+    '05f8e45d-1fda-4668-8e8b-2bdca0e5dcad': 'Eva FB V10',
 };
 
 const JOB_STATUS: Record<string, { text: string; cls: string }> = {

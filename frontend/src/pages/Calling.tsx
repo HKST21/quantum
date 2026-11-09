@@ -55,6 +55,15 @@ const AGENTS: AgentOption[] = [
         engines: ['gemini'],
         isFacebookAgent: true,
     },
+    {
+        id: '05f8e45d-1fda-4668-8e8b-2bdca0e5dcad',
+        name: 'Eva FB V10',
+        description: 'FB leady — telefon za 1 Kč (hovor specialisty, A/B test proti V9)',
+        pitch: 'Dobrý den, tady AI partner Týmobajl. Reaguji na Váš dřívější zájem o levnější tarif s telefonem za korunu. Tato možnost brzy vyprší, přejete si info od specialisty?',
+        successLine: 'Skvěle! Specialista se Vám brzy ozve. Hezký den!',
+        engines: ['gemini'],
+        isFacebookAgent: true,
+    },
 ];
 
 const GEMINI_DEFAULT_AGENT_ID = 'dab796fa-bf16-4f99-812c-601a031049ce'; // Eva Gemini V2
@@ -413,7 +422,7 @@ const Calling: React.FC = () => {
                                 </div>
                                 {engine === 'gemini' && (
                                     <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
-                                        ℹ️ Gemini je dostupné pro Eva V1, Eva Gemini V2, Eva V5 a Eva FB V9.
+                                        ℹ️ Gemini je dostupné pro Eva V1, Eva Gemini V2, Eva V5, Eva FB V9 a Eva FB V10.
                                     </div>
                                 )}
                                 {isAsterisk && (
