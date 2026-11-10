@@ -17,6 +17,7 @@ const AGENTS = [
     { id: '773db522-8df4-4903-9b4f-019b8b0969b5', name: 'Eva FB V7', description: 'FB leady — telefon za 1 Kč (poradce)' },
     { id: 'a2a7c4f6-1b90-4b64-8899-451dca563c96', name: 'Eva FB V8', description: 'FB leady — telefon za 1 Kč (expert)' },
     { id: '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d', name: 'Eva FB V9', description: 'FB leady — telefon za 1 Kč (info)' },
+    { id: '05f8e45d-1fda-4668-8e8b-2bdca0e5dcad', name: 'Eva FB V10', description: 'FB leady — telefon za 1 Kč (specialista, A/B test)' },
 ];
 
 // Agenti, kteří zůstávají aktivní (od 1. 11. 2026). Ostatní jsou archivní:
@@ -26,6 +27,7 @@ const ACTIVE_AGENT_IDS = [
     'ffbabfc8-08e0-4dae-8a02-f9d7865f2bd9', // Eva V5
     'dab796fa-bf16-4f99-812c-601a031049ce', // Eva Gemini V2
     '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d', // Eva FB V9
+    '05f8e45d-1fda-4668-8e8b-2bdca0e5dcad', // Eva FB V10 (A/B test, 6. 11. 2026)
 ];
 const ACTIVE_AGENTS = AGENTS.filter(a => ACTIVE_AGENT_IDS.includes(a.id));
 
