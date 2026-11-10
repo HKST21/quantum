@@ -31,6 +31,7 @@ const AGENTS: AgentOption[] = [
     { id: '773db522-8df4-4903-9b4f-019b8b0969b5', name: 'Eva FB V7', description: 'Facebook leady — skript 2' },
     { id: 'a2a7c4f6-1b90-4b64-8899-451dca563c96', name: 'Eva FB V8', description: 'Facebook leady — skript 3' },
     { id: '3aa4d37f-ebd7-49f9-a72f-c04ac33c057d', name: 'Eva FB V9', description: 'Facebook leady — skript 4' },
+    { id: '05f8e45d-1fda-4668-8e8b-2bdca0e5dcad', name: 'Eva FB V10', description: 'Facebook leady — skript 5 (specialista, A/B test)' },
 ];
 
 const Import: React.FC = () => {
